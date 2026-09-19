@@ -15,10 +15,14 @@ import { isValidChar, GAP_CHAR } from './iupac.js';
 
 /**
  * Resolve the character a keypress means.
+ * Space is a shortcut for the gap character — it's the fastest key to reach when
+ * hand-adjusting an alignment. This is a keyboard mapping only: space is still
+ * not a valid sequence character, so parsing and paste keep stripping it.
  * On macOS, Alt+letter emits an accented glyph rather than the letter, so the
  * physical key code is the reliable source when Alt is held.
  */
 function charFromEvent(e) {
+  if (e.code === 'Space') return GAP_CHAR;
   if (e.altKey) {
     if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
     if (e.code === 'Minus') return GAP_CHAR;
@@ -29,7 +33,7 @@ function charFromEvent(e) {
 
 /**
  * Creates the main keydown handler for sequence editing.
- * @param {function} getContext - returns { doc, editingEnabled }
+ * @param {function} getContext - returns { state, doc, editingEnabled }
  * @param {object} store - zustand actions
  * @param {function} handleSelectionKeys - from selection.js; returns true if consumed
  * @returns {function} keydown event handler
@@ -42,9 +46,70 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       return;
     }
 
-    const { doc, editingEnabled } = getContext();
-    if (!doc) return;
+    const { state, doc, editingEnabled } = getContext();
 
+    // --- Save (allowed while locked, and independent of any row focus) ---
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      store.save();
+      return;
+    }
+
+    // Column-cursor mode: every keystroke applies to this column in every row at
+    // once. Insert and delete are safe here precisely because they hit all rows
+    // identically — the columns stay in register. The bindings mirror row mode:
+    // type inserts, Alt+type substitutes in place, Backspace/Delete remove,
+    // Alt+Backspace/Delete leave a gap. Left/Right/Escape go to handleSelectionKeys.
+    if (state.columnCursor !== null) {
+      const col = state.columnCursor;
+      const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+
+      function canEditColumn() {
+        if (editingEnabled) return true;
+        store.showToast('Click "Allow Editing" to edit this sequence', 'warning');
+        return false;
+      }
+
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        if (!canEditColumn()) return;
+        const target = e.key === 'Backspace' ? col - 1 : col;
+        if (target < 0 || target >= maxLen) return;
+
+        if (e.altKey) {
+          store.substituteColumn(target, GAP_CHAR);
+          if (e.key === 'Backspace') store.setColumnCursor(target);
+        } else {
+          store.deleteColumn(target);
+          // One column is gone, so the cursor has to stay inside the new extent.
+          store.setColumnCursor(Math.max(0, Math.min(target, maxLen - 2)));
+        }
+        return;
+      }
+
+      if (e.key.length !== 1 && !e.altKey) return;
+      if (e.ctrlKey || e.metaKey) return;
+      const char = charFromEvent(e);
+      if (!char) return;
+      e.preventDefault();
+      if (!canEditColumn()) return;
+      if (!isValidChar(char)) {
+        store.showToast(`"${char}" is not a valid IUPAC base`, 'warning');
+        return;
+      }
+
+      if (e.altKey) {
+        store.substituteColumn(col, char);
+        store.setColumnCursor(Math.min(maxLen - 1, col + 1));
+      } else {
+        // Every row grows by one, so col + 1 is always in range afterwards.
+        store.insertColumn(col, char);
+        store.setColumnCursor(col + 1);
+      }
+      return;
+    }
+
+    if (!doc) return;
     const { selection } = doc;
     const pos = doc.cursorPos ?? 0;
     const mod = e.ctrlKey || e.metaKey;
@@ -54,13 +119,6 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       if (editingEnabled) return true;
       store.showToast('Click "Allow Editing" to edit this sequence', 'warning');
       return false;
-    }
-
-    // --- Save (allowed while locked) ---
-    if (mod && (e.key === 's' || e.key === 'S')) {
-      e.preventDefault();
-      store.save();
-      return;
     }
 
     // --- Copy (allowed while locked) ---

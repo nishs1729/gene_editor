@@ -3,6 +3,8 @@
 
 import { isValidChar, complement, GAP_CHAR } from './iupac.js';
 
+const CONSENSUS_THRESHOLD = 0.5;
+
 /**
  * Creates a new SequenceDocument.
  * @param {string} name - sequence name/header
@@ -159,6 +161,38 @@ export function moveRange(doc, start, end, dest) {
     before: doc.raw.slice(spanStart, spanEnd),
     after: newRaw.slice(spanStart, spanEnd),
   });
+}
+
+/**
+ * Compute the consensus call at one alignment column across several documents.
+ * Majority non-gap character if it meets `threshold` of the non-gap calls at
+ * that column, else 'N'. An all-gap column returns a gap.
+ * @param {Array<{raw: string}>} documents
+ * @param {number} col - column index
+ * @param {number} threshold - minimum share (0-1) of non-gap calls required
+ * @returns {{char: string, agreement: number}}
+ */
+export function getConsensusColumn(documents, col, threshold = CONSENSUS_THRESHOLD) {
+  const counts = {};
+  let nonGap = 0;
+
+  for (const doc of documents) {
+    const c = doc.raw[col];
+    if (c === undefined || c === GAP_CHAR) continue;
+    counts[c] = (counts[c] || 0) + 1;
+    nonGap++;
+  }
+
+  if (nonGap === 0) return { char: GAP_CHAR, agreement: 1 };
+
+  let best = null;
+  let bestCount = 0;
+  for (const [c, n] of Object.entries(counts)) {
+    if (n > bestCount) { best = c; bestCount = n; }
+  }
+
+  const agreement = bestCount / nonGap;
+  return agreement >= threshold ? { char: best, agreement } : { char: 'N', agreement };
 }
 
 /**

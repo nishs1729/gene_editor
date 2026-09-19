@@ -4,6 +4,9 @@ import { useRef } from 'react';
 import useStore, { getActiveDoc } from './store.js';
 import { parseFasta, toFasta } from './fasta.js';
 
+// Matches the percentages Geneious offers on its own consensus threshold control.
+const CONSENSUS_THRESHOLDS = [0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1];
+
 export default function Toolbar() {
   const fileInputRef = useRef(null);
 
@@ -17,15 +20,22 @@ export default function Toolbar() {
   const toggleFullscreen = useStore(s => s.toggleFullscreen);
   const toggleEditingEnabled = useStore(s => s.toggleEditingEnabled);
   const toggleTheme = useStore(s => s.toggleTheme);
+  const toggleConsensus = useStore(s => s.toggleConsensus);
+  const setConsensusThreshold = useStore(s => s.setConsensusThreshold);
+  const setHighlightMode = useStore(s => s.setHighlightMode);
+  const setReferenceDocId = useStore(s => s.setReferenceDocId);
   const reverseComplementActive = useStore(s => s.reverseComplementActive);
   const save = useStore(s => s.save);
   const showToast = useStore(s => s.showToast);
+  const deleteSelectedDocs = useStore(s => s.deleteSelectedDocs);
 
-  const { editingEnabled, viewSettings } = workspace;
+  const { editingEnabled, viewSettings, selectedDocIds } = workspace;
   const hasSequence = (activeDoc?.raw.length ?? 0) > 0;
   const canUndo = editingEnabled && (activeDoc?.history.length ?? 0) > 0;
   const canRedo = editingEnabled && (activeDoc?.future.length ?? 0) > 0;
   const isDirty = workspace.documents.some(d => d.dirty);
+  const isStacked = workspace.documents.length > 1;
+  const selectedCount = selectedDocIds.size;
 
   function handleFileLoad(e) {
     const file = e.target.files?.[0];
@@ -107,6 +117,71 @@ export default function Toolbar() {
           Save{isDirty ? ' •' : ''}
         </button>
       </div>
+
+      {isStacked && (
+        <>
+          <div className="toolbar-separator" />
+          <div className="toolbar-group">
+            <button
+              className={`toolbar-btn ${viewSettings.showConsensus ? 'toolbar-btn-active' : ''}`}
+              onClick={toggleConsensus}
+              title="Toggle the consensus row"
+            >
+              Consensus
+            </button>
+            <select
+              className="toolbar-select"
+              value={viewSettings.consensusThreshold}
+              onChange={e => setConsensusThreshold(Number(e.target.value))}
+              disabled={!viewSettings.showConsensus}
+              title="Agreement required among the non-gap bases in a column before it is called; below this the consensus shows N"
+              aria-label="Consensus threshold"
+            >
+              {CONSENSUS_THRESHOLDS.map(t => (
+                <option key={t} value={t}>{Math.round(t * 100)}%</option>
+              ))}
+            </select>
+
+            <select
+              className="toolbar-select"
+              value={viewSettings.highlightMode}
+              onChange={e => setHighlightMode(e.target.value)}
+              title="Grey out bases that agree with the consensus or with a reference sequence, so disagreements stand out"
+              aria-label="Highlighting"
+            >
+              <option value="none">No highlighting</option>
+              <option value="consensus">Disagreements to consensus</option>
+              <option value="reference">Disagreements to reference</option>
+            </select>
+
+            {viewSettings.highlightMode === 'reference' && (
+              <select
+                className="toolbar-select"
+                value={viewSettings.referenceDocId ?? ''}
+                onChange={e => setReferenceDocId(e.target.value)}
+                title="Which sequence the others are compared against"
+                aria-label="Reference sequence"
+              >
+                {workspace.documents.map(d => (
+                  <option key={d.id} value={d.id}>{d.name || 'Unnamed'}</option>
+                ))}
+              </select>
+            )}
+
+            <button
+              className="toolbar-btn"
+              onClick={deleteSelectedDocs}
+              disabled={selectedCount === 0}
+              title="Delete the selected sequences from this workspace (Ctrl+click or double-click a name to select)"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.5 9.5a1 1 0 0 0 1 .95h4a1 1 0 0 0 1-.95l.5-9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Delete{selectedCount > 0 ? ` (${selectedCount})` : ''}
+            </button>
+          </div>
+        </>
+      )}
 
       <div className="toolbar-separator" />
 

@@ -7,10 +7,11 @@ import { CanvasRenderer } from './canvasRenderer.js';
 import { createMouseHandlers, createSelectionKeyHandlers } from './selection.js';
 import { createEditingKeyHandler } from './editing.js';
 
-/** The slice of store state the renderer draws from. */
+/** The slice of store state the renderer and interaction handlers read from. */
 function renderState() {
-  const { documents, activeDocId, viewSettings, dragInsertIndex } = useStore.getState().workspace;
-  return { documents, activeDocId, viewSettings, dragInsertIndex };
+  const { documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor } =
+    useStore.getState().workspace;
+  return { documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor };
 }
 
 export default function SequenceCanvas() {

@@ -43,7 +43,7 @@ export function createMouseHandlers(renderer, getContext, store) {
 
   function onMouseDown(e) {
     const { x, y } = toCanvasXY(e);
-    const { state, scroll } = getContext();
+    const { state, scroll, editingEnabled } = getContext();
     const hit = renderer.hitTest(x, y, scroll, state);
     if (!hit) return;
     // preventDefault stops the page-level text selection drag, but it also
@@ -51,11 +51,35 @@ export function createMouseHandlers(renderer, getContext, store) {
     e.preventDefault();
     renderer.canvas.focus();
 
+    if (hit.kind === 'ruler') {
+      // Ruler click places a column cursor spanning every row — editing-only,
+      // since it has no meaning while the sequences are locked.
+      if (editingEnabled) store.setColumnCursor(hit.index);
+      else store.showToast('Click "Allow Editing" to place a column cursor', 'warning');
+      return;
+    }
+
+    // Whole-sequence selection is a deliberate gesture: Ctrl/Cmd+click toggles a
+    // sequence, Shift+click extends the range, double-click adds one. A plain
+    // click is the way out — it clears the selection entirely.
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod || (e.shiftKey && hit.kind === 'name')) {
+      if (e.shiftKey) store.selectDocRange(hit.docId);
+      else store.toggleDocSelection(hit.docId);
+      return;
+    }
+    if (hit.kind === 'name' && e.detail === 2) {
+      store.toggleDocSelection(hit.docId);
+      return;
+    }
+    if ((state.selectedDocIds?.size ?? 0) > 0) store.clearDocSelection();
+
     const wasActive = hit.docId === state.activeDocId;
     if (!wasActive) store.setActiveDoc(hit.docId);
+    if (state.columnCursor !== null) store.setColumnCursor(null);
 
-    // Name-gutter click: focus the row, nothing else.
-    if (hit.index === null) return;
+    // Name-gutter click with nothing selected: focus the row, nothing else.
+    if (hit.kind === 'name') return;
 
     const doc = docById(state, hit.docId);
     if (!doc) return;
@@ -112,8 +136,16 @@ export function createMouseHandlers(renderer, getContext, store) {
     const hit = renderer.hitTest(x, y, scroll, state);
     const canvas = renderer.canvas;
 
-    if (!hit || hit.index === null) {
+    if (!hit) {
       canvas.style.cursor = 'default';
+      return;
+    }
+    if (hit.kind === 'name') {
+      canvas.style.cursor = 'pointer';
+      return;
+    }
+    if (hit.kind === 'ruler') {
+      canvas.style.cursor = 'col-resize';
       return;
     }
 
@@ -135,7 +167,7 @@ export function createMouseHandlers(renderer, getContext, store) {
     const { x, y } = toCanvasXY(e);
     const { state, scroll } = getContext();
     const hit = renderer.hitTest(x, y, scroll, state);
-    if (!hit || hit.index === null) return;
+    if (!hit || hit.kind === 'name' || hit.kind === 'ruler') return;
 
     if (gesture === 'select' || gesture === 'resize') {
       store.setSelection(anchor, hit.index);
@@ -185,7 +217,7 @@ export function createMouseHandlers(renderer, getContext, store) {
 /**
  * Creates keyboard handlers for cursor movement and selection.
  * @param {function} getContext - returns { state, doc, basesPerRow }
- * @param {object} store - actions: setSelection, setCursorPos, setActiveDoc
+ * @param {object} store - actions: setSelection, setCursorPos, setActiveDoc, setColumnCursor
  * @returns {object} { handleSelectionKeys } — returns true if the key was consumed
  */
 export function createSelectionKeyHandlers(getContext, store) {
@@ -193,6 +225,25 @@ export function createSelectionKeyHandlers(getContext, store) {
   function handleSelectionKeys(e) {
     const { state, doc, basesPerRow } = getContext();
     if (!doc) return false;
+
+    // A column cursor spans every row; it moves independently of any one row's
+    // cursor/selection and only understands Left/Right and Escape.
+    if (state.columnCursor !== null) {
+      const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+      switch (e.key) {
+        case 'ArrowLeft':
+          store.setColumnCursor(Math.max(0, state.columnCursor - 1));
+          return true;
+        case 'ArrowRight':
+          store.setColumnCursor(Math.min(maxLen - 1, state.columnCursor + 1));
+          return true;
+        case 'Escape':
+          store.setColumnCursor(null);
+          return true;
+        default:
+          return false;
+      }
+    }
 
     const pos = doc.cursorPos ?? 0;
     const stacked = state.documents.length > 1;

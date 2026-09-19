@@ -7,6 +7,7 @@
 //             with a name gutter on the left (Geneious alignment-view style)
 
 import { getCharInfo, TEXT_COLOR_MAP, complement } from './iupac.js';
+import { getConsensusColumn } from './sequenceModel.js';
 import { getTheme } from './theme.js';
 
 // --- Style constants (from geneiousStyleRef.md) ---
@@ -27,6 +28,11 @@ const NAME_GUTTER_MIN = 90;
 const NAME_GUTTER_MAX = 220;
 const NAME_PADDING = 10;
 const RIGHT_PADDING = 20;
+const SELECTION_BAR_WIDTH = 3; // accent bar marking a selected row in the gutter
+const COLUMN_CURSOR_WIDTH = 2;
+// The consensus is a different kind of row from the sequences below it, so it gets
+// a rule heavy enough to read as a boundary rather than as another row gap.
+const CONSENSUS_SEPARATOR = 4;
 
 export class CanvasRenderer {
   constructor(canvas) {
@@ -98,6 +104,16 @@ export class CanvasRenderer {
     return RULER_HEIGHT + this.getRowHeight(showComplement);
   }
 
+  /**
+   * Width of the row-number column, sized to the highest number so the names
+   * below it all start at the same x.
+   */
+  getNumberWidth(count) {
+    const ctx = this.ctx;
+    ctx.font = `${NAME_FONT_SIZE}px ${FONT_FAMILY}`;
+    return Math.ceil(ctx.measureText(`${count}.`).width) + 6;
+  }
+
   /** Width of the stacked-mode name gutter, sized to the longest name. */
   getGutterWidth(state) {
     const ctx = this.ctx;
@@ -107,10 +123,17 @@ export class CanvasRenderer {
       const w = ctx.measureText(doc.name || 'Unnamed').width;
       if (w > widest) widest = w;
     }
+    const needed = NAME_PADDING + this.getNumberWidth(state.documents.length) + widest + NAME_PADDING;
     this._gutterWidth = Math.round(
-      Math.min(NAME_GUTTER_MAX, Math.max(NAME_GUTTER_MIN, widest + NAME_PADDING * 2 + 10))
+      Math.min(NAME_GUTTER_MAX, Math.max(NAME_GUTTER_MIN, needed))
     );
     return this._gutterWidth;
+  }
+
+  /** Y at which the (vertically scrolling) sequence rows begin, below the ruler and the pinned consensus row. */
+  getSeqAreaTop(state) {
+    const showConsensus = this.isStacked(state) && state.viewSettings.showConsensus;
+    return RULER_HEIGHT + (showConsensus ? this.cellHeight + ROW_GAP + CONSENSUS_SEPARATOR : 0);
   }
 
   /** Full scrollable content size, used to size the scroll container's spacer. */
@@ -123,7 +146,7 @@ export class CanvasRenderer {
       const maxLen = documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
       return {
         width: gutter + maxLen * this.cellWidth + RIGHT_PADDING,
-        height: RULER_HEIGHT + documents.length * this.getRowHeight(viewSettings.showComplement) + ROW_GAP,
+        height: this.getSeqAreaTop(state) + documents.length * this.getRowHeight(viewSettings.showComplement) + ROW_GAP,
       };
     }
 
@@ -215,13 +238,15 @@ export class CanvasRenderer {
   /** Alignment-view layout: one unwrapped row per document under a shared ruler. */
   _renderStacked(state, scroll) {
     const ctx = this.ctx;
-    const { documents, activeDocId, viewSettings } = state;
-    const { showComplement } = viewSettings;
+    const { documents, activeDocId, viewSettings, columnCursor } = state;
+    const selectedDocIds = state.selectedDocIds ?? new Set();
+    const { showComplement, showConsensus, highlightMode } = viewSettings;
     const gutter = this.getGutterWidth(state);
     this._gutterWidth = gutter;
 
+    const seqAreaTop = this.getSeqAreaTop(state);
     const rowHeight = this.getRowHeight(showComplement);
-    const seqAreaHeight = this.height - RULER_HEIGHT;
+    const seqAreaHeight = this.height - seqAreaTop;
     const firstRow = Math.max(0, Math.floor(scroll.top / rowHeight));
     const lastRow = Math.min(documents.length - 1, Math.floor((scroll.top + seqAreaHeight) / rowHeight));
 
@@ -229,15 +254,40 @@ export class CanvasRenderer {
     const visibleCols = Math.ceil((this.width - gutter) / this.cellWidth) + 2;
     const xAt = i => gutter + i * this.cellWidth - scroll.left;
 
+    const maxLen = documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+    const lastCol = Math.min(firstCol + visibleCols, maxLen);
+
+    // The consensus for the visible window is computed once per frame and shared
+    // by the consensus row and by "disagreements to consensus" highlighting.
+    let consensusWindow = null;
+    if (showConsensus || highlightMode === 'consensus') {
+      consensusWindow = [];
+      for (let i = firstCol; i < lastCol; i++) {
+        consensusWindow.push(getConsensusColumn(documents, i, viewSettings.consensusThreshold).char);
+      }
+    }
+
+    // `compareAt` yields the character each row's base is judged against; the row
+    // that *is* the comparison is left fully colored rather than greyed out whole.
+    let compareAt = null;
+    let referenceId = null;
+    if (highlightMode === 'consensus') {
+      compareAt = i => consensusWindow[i - firstCol];
+    } else if (highlightMode === 'reference') {
+      const ref = documents.find(d => d.id === viewSettings.referenceDocId) ?? documents[0];
+      referenceId = ref.id;
+      compareAt = i => ref.raw[i];
+    }
+
     // Sequence area, clipped so scrolled bases never paint over the gutter or ruler.
     ctx.save();
     ctx.beginPath();
-    ctx.rect(gutter, RULER_HEIGHT, this.width - gutter, seqAreaHeight);
+    ctx.rect(gutter, seqAreaTop, this.width - gutter, seqAreaHeight);
     ctx.clip();
 
     for (let row = firstRow; row <= lastRow; row++) {
       const doc = documents[row];
-      const rowY = RULER_HEIGHT + row * rowHeight - scroll.top;
+      const rowY = seqAreaTop + row * rowHeight - scroll.top;
       const isActive = doc.id === activeDocId;
       const contentHeight = rowHeight - ROW_GAP;
 
@@ -248,12 +298,20 @@ export class CanvasRenderer {
 
       const from = Math.min(firstCol, doc.raw.length);
       const to = Math.min(firstCol + visibleCols, doc.raw.length);
-      this._drawBases(doc.raw, from, to, xAt, rowY, this.cellHeight, FONT_SIZE, false);
+      const rowCompare = doc.id === referenceId ? null : compareAt;
+      this._drawBases(doc.raw, from, to, xAt, rowY, this.cellHeight, FONT_SIZE, false, rowCompare);
       if (showComplement) {
         this._drawBases(
           doc.raw, from, to, xAt, rowY + this.cellHeight,
-          this.complementCellHeight, COMPLEMENT_FONT_SIZE, true
+          this.complementCellHeight, COMPLEMENT_FONT_SIZE, true, rowCompare
         );
+      }
+
+      // Drawn over the bases, not under them: the cells are opaque, so a tint
+      // beneath would only show through the 1px seams between them.
+      if (selectedDocIds.has(doc.id)) {
+        ctx.fillStyle = this.theme.selectedRowOverlay;
+        ctx.fillRect(gutter, rowY, this.width - gutter, contentHeight);
       }
 
       if (isActive) {
@@ -264,7 +322,7 @@ export class CanvasRenderer {
             (doc.selection.end - doc.selection.start) * this.cellWidth, contentHeight
           );
         }
-        if (this.cursorVisible && doc.cursorPos !== null) {
+        if (columnCursor === null && this.cursorVisible && doc.cursorPos !== null) {
           ctx.fillStyle = this.theme.cursor;
           ctx.fillRect(xAt(doc.cursorPos) - 1, rowY, CURSOR_WIDTH, contentHeight);
         }
@@ -274,44 +332,101 @@ export class CanvasRenderer {
         }
       }
     }
+
+    // Column cursor spans every visible row — it edits all of them, not just the active one.
+    // Steady, not blinking: it marks a locus across every row rather than an
+    // insertion caret in one of them.
+    if (columnCursor !== null) {
+      ctx.fillStyle = this.theme.columnCursor;
+      ctx.fillRect(xAt(columnCursor) - 1, seqAreaTop, COLUMN_CURSOR_WIDTH, seqAreaHeight);
+    }
     ctx.restore();
 
-    this._drawNameGutter(state, scroll, gutter, firstRow, lastRow, rowHeight);
-    this._drawSharedRuler(gutter, firstCol, firstCol + visibleCols, xAt);
+    if (showConsensus) this._drawConsensusRow(gutter, firstCol, xAt, consensusWindow);
+    this._drawNameGutter(state, scroll, gutter, firstRow, lastRow, rowHeight, seqAreaTop);
+    this._drawSharedRuler(gutter, firstCol, firstCol + visibleCols, xAt, columnCursor);
   }
 
-  _drawNameGutter(state, scroll, gutter, firstRow, lastRow, rowHeight) {
+  /** A 9th, non-editable row pinned just below the ruler: the majority call per column. */
+  _drawConsensusRow(gutter, firstCol, xAt, consensusWindow) {
     const ctx = this.ctx;
-    ctx.fillStyle = this.theme.gutterBg;
-    ctx.fillRect(0, RULER_HEIGHT, gutter, this.height - RULER_HEIGHT);
+    const rowY = RULER_HEIGHT;
+    const rowH = this.cellHeight;
+
+    ctx.fillStyle = this.theme.consensusBg;
+    ctx.fillRect(0, rowY, this.width, rowH + ROW_GAP - 1);
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, RULER_HEIGHT, gutter, this.height - RULER_HEIGHT);
+    ctx.rect(gutter, rowY, this.width - gutter, rowH);
+    ctx.clip();
+
+    const consensus = consensusWindow.join('');
+    this._drawBases(consensus, 0, consensus.length, i => xAt(firstCol + i), rowY, rowH, FONT_SIZE, false);
+    ctx.restore();
+
+    // Spans the gutter too, so the consensus reads as a banded header across the
+    // whole view rather than as the first of the sequence rows.
+    ctx.fillStyle = this.theme.consensusBorder;
+    ctx.fillRect(0, rowY + rowH + ROW_GAP, this.width, CONSENSUS_SEPARATOR);
+  }
+
+  _drawNameGutter(state, scroll, gutter, firstRow, lastRow, rowHeight, seqAreaTop) {
+    const ctx = this.ctx;
+    const selectedDocIds = state.selectedDocIds ?? new Set();
+    ctx.fillStyle = this.theme.gutterBg;
+    ctx.fillRect(0, seqAreaTop, gutter, this.height - seqAreaTop);
+    if (state.viewSettings.showConsensus) {
+      ctx.fillStyle = this.theme.consensusBg;
+      // Stops short of the separator rule, which is drawn across the full width.
+      ctx.fillRect(0, RULER_HEIGHT, gutter, this.cellHeight + ROW_GAP);
+      ctx.fillStyle = this.theme.nameText;
+      ctx.font = `${NAME_FONT_SIZE}px ${FONT_FAMILY}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText('Consensus', NAME_PADDING, RULER_HEIGHT + this.cellHeight / 2);
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, seqAreaTop, gutter, this.height - seqAreaTop);
     ctx.clip();
 
     ctx.font = `${NAME_FONT_SIZE}px ${FONT_FAMILY}`;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
+    const numberWidth = this.getNumberWidth(state.documents.length);
 
     for (let row = firstRow; row <= lastRow; row++) {
       const doc = state.documents[row];
-      const rowY = RULER_HEIGHT + row * rowHeight - scroll.top;
+      const rowY = seqAreaTop + row * rowHeight - scroll.top;
       const isActive = doc.id === state.activeDocId;
+      const isSelected = selectedDocIds.has(doc.id);
       const centerY = rowY + (rowHeight - ROW_GAP) / 2;
 
-      if (isActive) {
+      // Selection reads as a highlighted row, with an accent bar at the left edge
+      // so it stays distinguishable from the (lighter) active-row tint.
+      if (isSelected) {
+        ctx.fillStyle = this.theme.selectedRowBg;
+        ctx.fillRect(0, rowY, gutter, rowHeight - ROW_GAP);
+        ctx.fillStyle = this.theme.selectedRowBar;
+        ctx.fillRect(0, rowY, SELECTION_BAR_WIDTH, rowHeight - ROW_GAP);
+      } else if (isActive) {
         ctx.fillStyle = this.theme.activeRowBg;
         ctx.fillRect(0, rowY, gutter, rowHeight - ROW_GAP);
       }
 
-      let textX = NAME_PADDING;
+      // Row number, dimmed and in its own fixed-width column so the names align.
+      ctx.fillStyle = this.theme.rowNumber;
+      ctx.fillText(`${row + 1}.`, NAME_PADDING, centerY);
+
+      let textX = NAME_PADDING + numberWidth;
       if (doc.dirty) {
         ctx.fillStyle = this.theme.dirtyMarker;
         ctx.beginPath();
-        ctx.arc(NAME_PADDING + 2, centerY, 3, 0, Math.PI * 2);
+        ctx.arc(textX + 2, centerY, 3, 0, Math.PI * 2);
         ctx.fill();
-        textX = NAME_PADDING + 11;
+        textX += 11;
       }
 
       ctx.fillStyle = isActive ? this.theme.nameTextActive : this.theme.nameText;
@@ -322,14 +437,23 @@ export class CanvasRenderer {
     }
     ctx.restore();
 
+    // Break the vertical border around the separator band so the thick rule reads
+    // as one unbroken line across the view.
     ctx.strokeStyle = this.theme.gutterBorder;
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(gutter + 0.5, RULER_HEIGHT);
+    if (state.viewSettings.showConsensus) {
+      ctx.moveTo(gutter + 0.5, RULER_HEIGHT);
+      ctx.lineTo(gutter + 0.5, seqAreaTop - CONSENSUS_SEPARATOR);
+      ctx.moveTo(gutter + 0.5, seqAreaTop);
+    } else {
+      ctx.moveTo(gutter + 0.5, RULER_HEIGHT);
+    }
     ctx.lineTo(gutter + 0.5, this.height);
     ctx.stroke();
   }
 
-  _drawSharedRuler(gutter, firstCol, lastCol, xAt) {
+  _drawSharedRuler(gutter, firstCol, lastCol, xAt, columnCursor) {
     const ctx = this.ctx;
     ctx.fillStyle = this.theme.canvasBg;
     ctx.fillRect(0, 0, this.width, RULER_HEIGHT);
@@ -362,6 +486,15 @@ export class CanvasRenderer {
         ctx.lineTo(x + this.cellWidth / 2, RULER_HEIGHT);
         ctx.stroke();
       }
+    }
+
+    if (columnCursor !== null) {
+      const x = xAt(columnCursor);
+      ctx.fillStyle = this.theme.columnCursor;
+      ctx.fillRect(x, 0, this.cellWidth, RULER_HEIGHT);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${columnCursor + 1}`, x + this.cellWidth / 2, 4);
     }
     ctx.restore();
 
@@ -421,7 +554,7 @@ export class CanvasRenderer {
    * ctx.fillStyle per base — not the fills themselves — dominates the frame cost
    * once many rows are on screen.
    */
-  _drawBases(seq, from, to, xAt, y, cellH, fontSize, isComplement) {
+  _drawBases(seq, from, to, xAt, y, cellH, fontSize, isComplement, compareAt = null) {
     if (from >= to) return;
     const ctx = this.ctx;
     const bg = this._bgBuckets;
@@ -432,13 +565,22 @@ export class CanvasRenderer {
     for (let i = from; i < to; i++) {
       const ch = isComplement ? (complement(seq[i]) ?? seq[i]) : seq[i];
       const info = getCharInfo(ch);
-      const bgColor = info.isGap ? this.theme.gapBg : info.color;
-      const fgColor = info.isGap ? this.theme.gapText : (TEXT_COLOR_MAP[ch] ?? '#FFFFFF');
+      // Highlighting compares the underlying base, not the complement glyph, so
+      // the two strands of a row agree or disagree together.
+      const agrees = compareAt !== null && seq[i] === compareAt(i);
+      // An agreeing cell gets no background at all rather than a grey one, so the
+      // active-row tint and the canvas keep showing through, as in Geneious.
+      const bgColor = agrees ? null : (info.isGap ? this.theme.gapBg : info.color);
+      const fgColor = agrees
+        ? this.theme.agreementText
+        : (info.isGap ? this.theme.gapText : (TEXT_COLOR_MAP[ch] ?? '#FFFFFF'));
       const x = xAt(i);
 
-      let bucket = bg.get(bgColor);
-      if (!bucket) { bucket = []; bg.set(bgColor, bucket); }
-      bucket.push(x);
+      if (bgColor !== null) {
+        let bucket = bg.get(bgColor);
+        if (!bucket) { bucket = []; bg.set(bgColor, bucket); }
+        bucket.push(x);
+      }
 
       let glyphs = fg.get(fgColor);
       if (!glyphs) { glyphs = []; fg.set(fgColor, glyphs); }
@@ -501,27 +643,39 @@ export class CanvasRenderer {
   // --- Coordinate mapping ---
 
   /**
-   * Resolve a canvas pixel to a document and sequence index.
+   * Resolve a canvas pixel to a hit. In stacked mode this is one of:
+   *   - { kind: 'ruler', index } — the shared ruler, for placing a column cursor
+   *   - { kind: 'name', docId } — a row's name, in the gutter
+   *   - { kind: 'seq', docId, index } — a sequence cell
+   * Single mode always returns { kind: 'seq', docId, index }.
    * Indices are clamped rather than rejected so dragging past an edge still extends
-   * the selection. Returns index === null for a name-gutter hit (row focus only).
-   * @returns {{docId: string, index: number|null}|null}
+   * the selection.
    */
   hitTest(x, y, scroll, state) {
     const { documents, viewSettings } = state;
     if (documents.length === 0) return null;
 
     if (this.isStacked(state)) {
-      if (y < RULER_HEIGHT) return null;
+      const gutter = this._gutterWidth;
+      if (y < RULER_HEIGHT) {
+        if (x < gutter) return null;
+        const maxLen = documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+        const col = Math.round((x - gutter + scroll.left) / this.cellWidth);
+        return { kind: 'ruler', index: Math.max(0, Math.min(maxLen - 1, col)) };
+      }
+
+      const seqAreaTop = this.getSeqAreaTop(state);
+      if (y < seqAreaTop) return null; // consensus row: not interactive
+
       const rowHeight = this.getRowHeight(viewSettings.showComplement);
-      const row = Math.floor((y - RULER_HEIGHT + scroll.top) / rowHeight);
+      const row = Math.floor((y - seqAreaTop + scroll.top) / rowHeight);
       if (row < 0 || row >= documents.length) return null;
 
       const doc = documents[row];
-      const gutter = this._gutterWidth;
-      if (x < gutter) return { docId: doc.id, index: null };
+      if (x < gutter) return { kind: 'name', docId: doc.id };
 
       const col = Math.round((x - gutter + scroll.left) / this.cellWidth);
-      return { docId: doc.id, index: Math.max(0, Math.min(doc.raw.length, col)) };
+      return { kind: 'seq', docId: doc.id, index: Math.max(0, Math.min(doc.raw.length, col)) };
     }
 
     const doc = documents[0];
@@ -530,7 +684,7 @@ export class CanvasRenderer {
     const row = Math.max(0, Math.floor((y + scroll.top) / rowHeight));
     const col = Math.max(0, Math.min(basesPerRow, Math.round((x - LEFT_MARGIN) / this.cellWidth)));
     const index = Math.max(0, Math.min(doc.raw.length, row * basesPerRow + col));
-    return { docId: doc.id, index };
+    return { kind: 'seq', docId: doc.id, index };
   }
 
   /**
@@ -548,7 +702,7 @@ export class CanvasRenderer {
       const rowHeight = this.getRowHeight(viewSettings.showComplement);
       return {
         x: this._gutterWidth + index * this.cellWidth - scroll.left,
-        y: RULER_HEIGHT + row * rowHeight - scroll.top,
+        y: this.getSeqAreaTop(state) + row * rowHeight - scroll.top,
         height: contentHeight,
       };
     }

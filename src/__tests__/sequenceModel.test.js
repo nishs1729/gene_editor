@@ -11,6 +11,7 @@ import {
   redo,
   reverseComplement,
   getStats,
+  getConsensusColumn,
 } from '../sequenceModel.js';
 
 describe('createDocument', () => {
@@ -218,6 +219,37 @@ describe('reverseComplementDoc', () => {
   it('no-ops on an empty document', () => {
     const doc = createDocument('test', '');
     expect(reverseComplementDoc(doc)).toBe(doc);
+  });
+});
+
+describe('getConsensusColumn', () => {
+  const docs = (rows) => rows.map(raw => createDocument('x', raw));
+
+  it('calls the majority base', () => {
+    const result = getConsensusColumn(docs(['A', 'A', 'A', 'T']), 0);
+    expect(result.char).toBe('A');
+    expect(result.agreement).toBeCloseTo(0.75);
+  });
+
+  it('falls back to N below threshold', () => {
+    const result = getConsensusColumn(docs(['A', 'A', 'T', 'T']), 0, 0.6);
+    expect(result.char).toBe('N');
+  });
+
+  it('ignores gaps when tallying', () => {
+    const result = getConsensusColumn(docs(['A', 'A', '-', '-']), 0);
+    expect(result.char).toBe('A');
+    expect(result.agreement).toBe(1);
+  });
+
+  it('returns a gap for an all-gap column', () => {
+    const result = getConsensusColumn(docs(['-', '-']), 0);
+    expect(result.char).toBe('-');
+  });
+
+  it('skips rows shorter than the column', () => {
+    const result = getConsensusColumn(docs(['AT', 'A']), 1);
+    expect(result.char).toBe('T');
   });
 });
 

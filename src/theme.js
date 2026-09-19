@@ -18,6 +18,14 @@ export const THEMES = {
     activeRowBg: 'rgba(66, 135, 245, 0.12)',
     dropMarker: '#4285F5',
     dirtyMarker: '#E67E22',
+    consensusBg: '#0F1524',
+    consensusBorder: '#4A7FC1', // thick rule separating the consensus from the rows
+    agreementText: '#5F6B80', // greyed-out base that matches the consensus/reference
+    rowNumber: '#5A6478',
+    columnCursor: '#FF9F45',
+    selectedRowBg: 'rgba(66, 135, 245, 0.30)',
+    selectedRowBar: '#4285F5',
+    selectedRowOverlay: 'rgba(66, 135, 245, 0.28)',
   },
   light: {
     canvasBg: '#FFFFFF',
@@ -34,6 +42,14 @@ export const THEMES = {
     activeRowBg: 'rgba(45, 127, 249, 0.08)',
     dropMarker: '#2D7FF9',
     dirtyMarker: '#D97706',
+    consensusBg: '#F0F2F5',
+    consensusBorder: '#8A94A6',
+    agreementText: '#AEB6C2',
+    rowNumber: '#A3ABB8',
+    columnCursor: '#E8590C',
+    selectedRowBg: 'rgba(45, 127, 249, 0.22)',
+    selectedRowBar: '#2D7FF9',
+    selectedRowOverlay: 'rgba(45, 127, 249, 0.22)',
   },
 };
 

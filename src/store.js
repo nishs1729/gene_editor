@@ -69,6 +69,17 @@ const useStore = create((set, get) => {
     });
   }
 
+  /** Apply `fn` to every document — the basis of the column-wide edits. */
+  function applyToAllDocs(fn) {
+    const { workspace } = get();
+    const documents = workspace.documents.map(fn);
+    const active = documents.find(d => d.id === workspace.activeDocId);
+    set({
+      workspace: { ...workspace, documents },
+      stats: active ? getStats(active.raw) : get().stats,
+    });
+  }
+
   function patchViewSettings(patch) {
     const { workspace } = get();
     set({
@@ -83,10 +94,17 @@ const useStore = create((set, get) => {
       viewSettings: {
         lineWidth: 0, // 0 = auto-calculate from canvas width
         showComplement: false,
+        showConsensus: true, // only rendered when stacked (>1 document) regardless
+        consensusThreshold: 0.5, // min share of non-gap calls needed to call a base rather than N
+        highlightMode: 'none', // 'none' | 'consensus' | 'reference' — grey out agreeing bases
+        referenceDocId: null, // which document 'reference' highlighting compares against
         fullscreen: false,
       },
       editingEnabled: false,
       dragInsertIndex: null, // transient drag-to-move preview position
+      selectedDocIds: new Set(), // row (whole-sequence) multi-select, for deletion
+      lastSelectionClickId: null, // anchor for shift-click range-select on rows
+      columnCursor: null, // alignment-column index; typing edits every row at this column
     },
 
     theme: loadPersistedTheme(),
@@ -107,6 +125,10 @@ const useStore = create((set, get) => {
           activeDocId: documents[0]?.id ?? null,
           editingEnabled: false, // newly opened documents start locked, as in Geneious
           dragInsertIndex: null,
+          selectedDocIds: new Set(),
+          columnCursor: null,
+          // The old reference belongs to documents that are gone.
+          viewSettings: { ...workspace.viewSettings, referenceDocId: documents[0]?.id ?? null },
         },
         stats: documents[0] ? getStats(documents[0].raw) : EMPTY_STATS,
       });
@@ -188,8 +210,121 @@ const useStore = create((set, get) => {
 
     toggleEditingEnabled: () => {
       const { workspace } = get();
-      set({ workspace: { ...workspace, editingEnabled: !workspace.editingEnabled } });
+      const editingEnabled = !workspace.editingEnabled;
+      set({
+        workspace: {
+          ...workspace,
+          editingEnabled,
+          // A column cursor only makes sense while editing is allowed.
+          columnCursor: editingEnabled ? workspace.columnCursor : null,
+        },
+      });
     },
+
+    toggleConsensus: () => patchViewSettings({
+      showConsensus: !get().workspace.viewSettings.showConsensus,
+    }),
+
+    /** @param {number} fraction - 0-1; agreement required before a base is called. */
+    setConsensusThreshold: (fraction) => patchViewSettings({
+      consensusThreshold: Math.min(1, Math.max(0, fraction)),
+    }),
+
+    /** @param {'none'|'consensus'|'reference'} mode */
+    setHighlightMode: (mode) => {
+      const { workspace } = get();
+      patchViewSettings({
+        highlightMode: mode,
+        // Switching to reference mode with no reference chosen yet picks the first
+        // sequence, so the mode always has something to compare against.
+        referenceDocId: mode === 'reference'
+          ? (workspace.viewSettings.referenceDocId ?? workspace.documents[0]?.id ?? null)
+          : workspace.viewSettings.referenceDocId,
+      });
+    },
+
+    setReferenceDocId: (id) => patchViewSettings({ referenceDocId: id }),
+
+    // --- Row (whole-sequence) multi-select, for deletion ---
+
+    toggleDocSelection: (id) => {
+      const { workspace } = get();
+      const selectedDocIds = new Set(workspace.selectedDocIds);
+      if (selectedDocIds.has(id)) selectedDocIds.delete(id);
+      else selectedDocIds.add(id);
+      set({ workspace: { ...workspace, selectedDocIds, lastSelectionClickId: id } });
+    },
+
+    selectDocRange: (id) => {
+      const { workspace } = get();
+      const { documents, lastSelectionClickId, selectedDocIds } = workspace;
+      const anchor = documents.findIndex(d => d.id === lastSelectionClickId);
+      const target = documents.findIndex(d => d.id === id);
+      if (anchor === -1 || target === -1) {
+        get().toggleDocSelection(id);
+        return;
+      }
+      const [from, to] = anchor < target ? [anchor, target] : [target, anchor];
+      const next = new Set(selectedDocIds);
+      for (let i = from; i <= to; i++) next.add(documents[i].id);
+      set({ workspace: { ...workspace, selectedDocIds: next, lastSelectionClickId: id } });
+    },
+
+    clearDocSelection: () => {
+      const { workspace } = get();
+      if (workspace.selectedDocIds.size === 0) return;
+      set({ workspace: { ...workspace, selectedDocIds: new Set() } });
+    },
+
+    deleteSelectedDocs: () => {
+      const { workspace } = get();
+      const { selectedDocIds } = workspace;
+      if (selectedDocIds.size === 0) return;
+
+      const documents = workspace.documents.filter(d => !selectedDocIds.has(d.id));
+      const activeDocId = selectedDocIds.has(workspace.activeDocId)
+        ? (documents[0]?.id ?? null)
+        : workspace.activeDocId;
+
+      set({
+        workspace: {
+          ...workspace,
+          documents,
+          activeDocId,
+          selectedDocIds: new Set(),
+          columnCursor: null,
+        },
+        stats: documents.find(d => d.id === activeDocId)
+          ? getStats(documents.find(d => d.id === activeDocId).raw)
+          : EMPTY_STATS,
+      });
+      get().showToast(
+        `Deleted ${selectedDocIds.size} sequence${selectedDocIds.size > 1 ? 's' : ''}`,
+        'info'
+      );
+    },
+
+    // --- Column cursor (alignment-locus editing across every row) ---
+
+    setColumnCursor: (col) => {
+      const { workspace } = get();
+      set({ workspace: { ...workspace, columnCursor: col } });
+    },
+
+    /** Substitute `char` at `col` in every document whose length covers it. */
+    substituteColumn: (col, char) => applyToAllDocs(doc =>
+      col < doc.raw.length ? modelSubstitute(doc, col, char) : doc
+    ),
+
+    /** Insert `char` as a new column at `col` in every document. */
+    insertColumn: (col, char) => applyToAllDocs(doc =>
+      col <= doc.raw.length ? modelInsertAt(doc, col, char) : doc
+    ),
+
+    /** Remove column `col` from every document whose length covers it. */
+    deleteColumn: (col) => applyToAllDocs(doc =>
+      col < doc.raw.length ? modelDeleteRange(doc, col, col + 1) : doc
+    ),
 
     // --- Theme ---
 
