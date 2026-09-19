@@ -9,15 +9,17 @@ import SelectionReadout from './SelectionReadout.jsx';
 import Toast from './Toast.jsx';
 
 export default function App() {
-  const fullscreen = useStore(s => s.doc.viewSettings.fullscreen);
+  const fullscreen = useStore(s => s.workspace.viewSettings.fullscreen);
+  const theme = useStore(s => s.theme);
   const toggleFullscreen = useStore(s => s.toggleFullscreen);
 
-  // Escape key exits fullscreen
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
   useEffect(() => {
     function handleKeyDown(e) {
-      if (e.key === 'Escape' && fullscreen) {
-        toggleFullscreen();
-      }
+      if (e.key === 'Escape' && fullscreen) toggleFullscreen();
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);

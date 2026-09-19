@@ -4,6 +4,9 @@ import {
   substitute,
   insertAt,
   deleteRange,
+  replaceRange,
+  moveRange,
+  reverseComplementDoc,
   undo,
   redo,
   reverseComplement,
@@ -117,6 +120,114 @@ describe('deleteRange', () => {
     expect(deleteRange(doc, -1, 2)).toBe(doc);
     expect(deleteRange(doc, 0, 5)).toBe(doc);
     expect(deleteRange(doc, 3, 2)).toBe(doc);
+  });
+});
+
+describe('replaceRange', () => {
+  it('replaces a range in one command', () => {
+    const doc = createDocument('test', 'ATGCATGC');
+    const result = replaceRange(doc, 2, 5, 'NN');
+    expect(result.raw).toBe('ATNNTGC');
+    expect(result.history.length).toBe(1);
+    expect(result.history[0].type).toBe('replace');
+    expect(result.history[0].before).toBe('GCA');
+    expect(result.history[0].after).toBe('NN');
+  });
+
+  it('undoes a replacement in a single step', () => {
+    let doc = createDocument('test', 'ATGCATGC');
+    doc = replaceRange(doc, 2, 5, 'NN');
+    doc = undo(doc);
+    expect(doc.raw).toBe('ATGCATGC');
+    expect(doc.history.length).toBe(0);
+  });
+
+  it('redoes a replacement', () => {
+    let doc = createDocument('test', 'ATGCATGC');
+    doc = replaceRange(doc, 2, 5, 'NN');
+    doc = undo(doc);
+    doc = redo(doc);
+    expect(doc.raw).toBe('ATNNTGC');
+  });
+
+  it('supports insertion (empty range) and deletion (empty text)', () => {
+    const doc = createDocument('test', 'ATGC');
+    expect(replaceRange(doc, 2, 2, 'NN').raw).toBe('ATNNGC');
+    expect(replaceRange(doc, 1, 3, '').raw).toBe('AC');
+  });
+
+  it('accepts gap characters', () => {
+    const doc = createDocument('test', 'ATGC');
+    expect(replaceRange(doc, 1, 3, '--').raw).toBe('A--C');
+  });
+
+  it('filters invalid characters and no-ops when nothing changes', () => {
+    const doc = createDocument('test', 'ATGC');
+    expect(replaceRange(doc, 1, 3, 'X1Z').raw).toBe('AC');
+    expect(replaceRange(doc, 1, 2, 'T')).toBe(doc);
+  });
+});
+
+describe('moveRange', () => {
+  it('moves a range to the right', () => {
+    const doc = createDocument('test', 'ATGCATGC');
+    const result = moveRange(doc, 0, 2, 6); // move 'AT' to sit before index 6
+    expect(result.raw).toBe('GCATATGC');
+  });
+
+  it('moves a range to the left', () => {
+    const doc = createDocument('test', 'ATGCNN');
+    const result = moveRange(doc, 4, 6, 0);
+    expect(result.raw).toBe('NNATGC');
+  });
+
+  it('preserves length and records one undoable command', () => {
+    const doc = createDocument('test', 'ATGCNN');
+    const result = moveRange(doc, 4, 6, 0);
+    expect(result.length).toBe(doc.length);
+    expect(result.history.length).toBe(1);
+    expect(undo(result).raw).toBe('ATGCNN');
+  });
+
+  it('no-ops when dropped inside itself or out of bounds', () => {
+    const doc = createDocument('test', 'ATGCNN');
+    expect(moveRange(doc, 1, 4, 2)).toBe(doc);
+    expect(moveRange(doc, 1, 4, 99)).toBe(doc);
+    expect(moveRange(doc, 3, 3, 0)).toBe(doc);
+  });
+});
+
+describe('reverseComplementDoc', () => {
+  it('reverse complements in place as one undoable command', () => {
+    let doc = createDocument('test', 'ATGC');
+    doc = reverseComplementDoc(doc);
+    expect(doc.raw).toBe('GCAT');
+    expect(doc.name).toBe('test'); // name preserved
+    expect(doc.history.length).toBe(1);
+    doc = undo(doc);
+    expect(doc.raw).toBe('ATGC');
+  });
+
+  it('preserves prior history', () => {
+    let doc = createDocument('test', 'ATGC');
+    doc = substitute(doc, 0, 'G');
+    doc = reverseComplementDoc(doc);
+    expect(doc.history.length).toBe(2);
+  });
+
+  it('no-ops on an empty document', () => {
+    const doc = createDocument('test', '');
+    expect(reverseComplementDoc(doc)).toBe(doc);
+  });
+});
+
+describe('dirty flag', () => {
+  it('starts clean and is set by edits', () => {
+    const doc = createDocument('test', 'ATGC');
+    expect(doc.dirty).toBe(false);
+    expect(substitute(doc, 0, 'G').dirty).toBe(true);
+    expect(insertAt(doc, 0, 'G').dirty).toBe(true);
+    expect(deleteRange(doc, 0, 1).dirty).toBe(true);
   });
 });
 
@@ -235,5 +346,25 @@ describe('getStats', () => {
     const stats = getStats('');
     expect(stats.length).toBe(0);
     expect(stats.gcPercent).toBe(0);
+  });
+
+  it('counts gaps and excludes them from GC%', () => {
+    const stats = getStats('GC--AT');
+    expect(stats.length).toBe(6);
+    expect(stats.gaps).toBe(2);
+    expect(stats.ungappedLength).toBe(4);
+    expect(stats.gcPercent).toBe(50); // 2 of 4 ungapped bases, not 2 of 6
+  });
+
+  it('reports 0% GC for an all-gap row rather than dividing by zero', () => {
+    const stats = getStats('----');
+    expect(stats.gcPercent).toBe(0);
+    expect(stats.ungappedLength).toBe(0);
+  });
+});
+
+describe('reverseComplement with gaps', () => {
+  it('reverses gaps along with bases', () => {
+    expect(reverseComplement('AT--GC')).toBe('GC--AT');
   });
 });

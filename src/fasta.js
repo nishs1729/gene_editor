@@ -40,8 +40,9 @@ export function parseFasta(text) {
       currentName = trimmed.slice(1).trim();
       currentSeq = [];
     } else {
-      // Sequence line: uppercase, strip non-alpha characters
-      const cleaned = trimmed.toUpperCase().replace(/[^A-Z]/g, '');
+      // Sequence line: uppercase, keep letters and gaps, drop digits/whitespace.
+      // '.' is an alternate gap character in some aligned FASTA dialects.
+      const cleaned = trimmed.toUpperCase().replace(/\./g, '-').replace(/[^A-Z-]/g, '');
       if (cleaned.length > 0) {
         // If no header seen yet, create a default one
         if (currentName === null) {

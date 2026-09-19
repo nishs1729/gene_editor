@@ -1,52 +1,56 @@
 // SequenceCanvas: React wrapper for the canvas-based sequence renderer.
-// Manages canvas lifecycle, scroll, resize, and wires selection/editing handlers.
+// Manages canvas lifecycle, 2D scroll, resize, and wires selection/editing handlers.
 
-import { useRef, useEffect, useCallback } from 'react';
-import useStore from './store.js';
+import { useRef, useEffect, useCallback, useState } from 'react';
+import useStore, { getActiveDoc } from './store.js';
 import { CanvasRenderer } from './canvasRenderer.js';
 import { createMouseHandlers, createSelectionKeyHandlers } from './selection.js';
 import { createEditingKeyHandler } from './editing.js';
+
+/** The slice of store state the renderer draws from. */
+function renderState() {
+  const { documents, activeDocId, viewSettings, dragInsertIndex } = useStore.getState().workspace;
+  return { documents, activeDocId, viewSettings, dragInsertIndex };
+}
 
 export default function SequenceCanvas() {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const rendererRef = useRef(null);
-  const scrollTopRef = useRef(0);
+  const scrollRef = useRef({ top: 0, left: 0 });
   const animFrameRef = useRef(null);
 
-  // Subscribe to the pieces of state we need
-  const doc = useStore(s => s.doc);
-  const fullscreen = useStore(s => s.doc.viewSettings.fullscreen);
+  const workspace = useStore(s => s.workspace);
+  const theme = useStore(s => s.theme);
+  const { fullscreen } = workspace.viewSettings;
 
-  // Get store actions (stable references)
-  const storeActions = useRef(null);
-  storeActions.current = {
-    setSelection: useStore.getState().setSelection,
-    setCursorPos: useStore.getState().setCursorPos,
-    clearSelection: useStore.getState().clearSelection,
-    substitute: useStore.getState().substitute,
-    insertAt: useStore.getState().insertAt,
-    deleteRange: useStore.getState().deleteRange,
-    undo: useStore.getState().undo,
-    redo: useStore.getState().redo,
-    showToast: useStore.getState().showToast,
-  };
+  const [contentSize, setContentSize] = useState({ width: 0, height: 0 });
+
+  const scheduleRender = useCallback(() => {
+    if (animFrameRef.current) return;
+    animFrameRef.current = requestAnimationFrame(() => {
+      animFrameRef.current = null;
+      const renderer = rendererRef.current;
+      if (!renderer) return;
+      const state = renderState();
+      renderer.render(state, scrollRef.current);
+      const size = renderer.getContentSize(state);
+      setContentSize(prev =>
+        prev.width === size.width && prev.height === size.height ? prev : size
+      );
+    });
+  }, []);
 
   // Initialize renderer
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     rendererRef.current = new CanvasRenderer(canvas);
-
-    return () => {
-      if (rendererRef.current) {
-        rendererRef.current.stopCursorBlink();
-      }
-    };
+    rendererRef.current.setTheme(useStore.getState().theme);
+    return () => rendererRef.current?.stopCursorBlink();
   }, []);
 
-  // Resize handler
+  // Resize with the container
   useEffect(() => {
     const container = containerRef.current;
     const renderer = rendererRef.current;
@@ -61,125 +65,92 @@ export default function SequenceCanvas() {
         }
       }
     });
-
     observer.observe(container);
 
-    // Initial size
     const rect = container.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      renderer.resize(rect.width, rect.height);
-    }
+    if (rect.width > 0 && rect.height > 0) renderer.resize(rect.width, rect.height);
 
     return () => observer.disconnect();
-  }, []);
+  }, [scheduleRender]);
 
-  // Schedule a render on the next animation frame (debounced)
-  const scheduleRender = useCallback(() => {
-    if (animFrameRef.current) return;
-    animFrameRef.current = requestAnimationFrame(() => {
-      animFrameRef.current = null;
-      const renderer = rendererRef.current;
-      if (!renderer) return;
-      const currentDoc = useStore.getState().doc;
-      renderer.render(currentDoc, scrollTopRef.current);
-    });
-  }, []);
-
-  // Re-render when doc changes
+  // Redraw on document/view changes
   useEffect(() => {
     scheduleRender();
-  }, [doc, scheduleRender]);
+  }, [workspace, scheduleRender]);
 
-  // Cursor blink re-render
+  // Redraw on theme change
+  useEffect(() => {
+    rendererRef.current?.setTheme(theme);
+    scheduleRender();
+  }, [theme, scheduleRender]);
+
+  // Cursor blink
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-
     renderer.startCursorBlink();
-    const blinkInterval = setInterval(() => {
-      scheduleRender();
-    }, 530);
-
+    const interval = setInterval(scheduleRender, 530);
     return () => {
-      clearInterval(blinkInterval);
+      clearInterval(interval);
       renderer.stopCursorBlink();
     };
   }, [scheduleRender]);
 
-  // Scroll handler
   const handleScroll = useCallback((e) => {
-    scrollTopRef.current = e.target.scrollTop;
+    scrollRef.current = { top: e.target.scrollTop, left: e.target.scrollLeft };
     scheduleRender();
   }, [scheduleRender]);
 
-  // Mouse handlers
+  // Mouse + keyboard handlers
   const mouseHandlersRef = useRef(null);
-  useEffect(() => {
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-
-    const getState = () => ({
-      doc: useStore.getState().doc,
-      scrollTop: scrollTopRef.current,
-    });
-
-    mouseHandlersRef.current = createMouseHandlers(renderer, getState, storeActions.current);
-  }, []);
-
-  // Keyboard handler
   const keyHandlerRef = useRef(null);
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
 
-    const getState = () => ({
-      doc: useStore.getState().doc,
-    });
-
-    const getBasesPerRow = () => {
-      return renderer.getBasesPerRow(useStore.getState().doc.viewSettings.lineWidth);
+    const actions = useStore.getState();
+    const getContext = () => {
+      const state = useStore.getState();
+      return {
+        state: renderState(),
+        doc: getActiveDoc(state),
+        scroll: scrollRef.current,
+        editingEnabled: state.workspace.editingEnabled,
+        basesPerRow: renderer.getBasesPerRow(state.workspace.viewSettings.lineWidth),
+      };
     };
 
-    const { handleSelectionKeys } = createSelectionKeyHandlers(getState, storeActions.current, getBasesPerRow);
-    keyHandlerRef.current = createEditingKeyHandler(getState, storeActions.current, handleSelectionKeys);
-  }, []);
+    const mouse = createMouseHandlers(renderer, getContext, actions);
+    mouseHandlersRef.current = mouse;
 
-  // Compute total scrollable height
-  const renderer = rendererRef.current;
-  let totalHeight = 0;
-  if (renderer && doc.raw.length > 0) {
-    const basesPerRow = renderer.getBasesPerRow(doc.viewSettings.lineWidth);
-    totalHeight = renderer.getTotalHeight(doc.raw, basesPerRow, doc.viewSettings.showComplement);
-  }
+    const { handleSelectionKeys } = createSelectionKeyHandlers(getContext, actions);
+    keyHandlerRef.current = createEditingKeyHandler(getContext, actions, handleSelectionKeys);
+
+    return () => mouse.destroy();
+  }, []);
 
   return (
     <div
       ref={containerRef}
       className={`sequence-canvas-container ${fullscreen ? 'fullscreen' : ''}`}
       onScroll={handleScroll}
-      style={{
-        overflow: 'auto',
-        flex: 1,
-        position: 'relative',
-      }}
     >
-      <div style={{ height: totalHeight, minHeight: '100%', position: 'relative' }}>
+      <div
+        style={{
+          width: contentSize.width || '100%',
+          height: contentSize.height,
+          minHeight: '100%',
+          position: 'relative',
+        }}
+      >
         <canvas
           ref={canvasRef}
           tabIndex={0}
           className="sequence-canvas"
           onMouseDown={(e) => mouseHandlersRef.current?.onMouseDown(e)}
           onMouseMove={(e) => mouseHandlersRef.current?.onMouseMove(e)}
-          onMouseUp={(e) => mouseHandlersRef.current?.onMouseUp(e)}
           onKeyDown={(e) => keyHandlerRef.current?.(e)}
-          style={{
-            position: 'sticky',
-            top: 0,
-            left: 0,
-            display: 'block',
-            outline: 'none',
-            cursor: 'text',
-          }}
+          style={{ position: 'sticky', top: 0, left: 0 }}
         />
       </div>
     </div>

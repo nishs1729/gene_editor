@@ -1,5 +1,40 @@
 # Geneious-Style Visual Reference
 
+## Themes
+
+Base cell colors (the table below) are **theme-independent** — they read correctly on
+both the dark and light canvas, as they do in Geneious itself. Only the chrome around
+them changes. Canvas-side values live in `theme.js`; the CSS equivalents live in the
+`:root[data-theme=...]` blocks in `index.css`. Keep the two in sync.
+
+| Element | Dark | Light |
+|---|---|---|
+| App background | `#1A1A2E` | `#FFFFFF` |
+| Panel background | `#16213E` | `#F7F8FA` |
+| Toolbar background | `#0F3460` | `#FFFFFF` |
+| Canvas background | `#0A0E17` | `#FFFFFF` |
+| Border | `#1A3A5C` | `#E1E4E8` |
+| Primary text | `#E2E8F0` | `#1F2933` |
+| Secondary text | `#8892B0` | `#6B7684` |
+| Muted text | `#4A5568` | `#A3ABB8` |
+| Accent | `#4285F5` | `#2D7FF9` |
+| Ruler text | `#8892B0` | `#8A94A6` |
+| Ruler ticks | `#4A5568` | `#C3C9D4` |
+| Selection overlay | `rgba(66,135,245,0.35)` | `rgba(45,127,249,0.18)` |
+| Cursor | `#FFFFFF` | `#1F2933` |
+| Gap cell background | `#161B26` | `#EDEFF3` |
+| Gap dash | `#4A5568` | `#A3ABB8` |
+| Name gutter background | `#0F1524` | `#F7F8FA` |
+| Active row highlight | `rgba(66,135,245,0.12)` | `rgba(45,127,249,0.08)` |
+| Drop marker (drag-to-move) | `#4285F5` | `#2D7FF9` |
+| Unsaved marker | `#E67E22` | `#D97706` |
+
+The light theme is pinned to `temp_screenshot_geneious.png` (Geneious Alignment View).
+
+The stats readout is the one place a base color is overridden per theme: `G`'s
+`#F1C40F` gold is unreadable as text on white, so light mode uses `#B7950B` for that
+label only. The canvas keeps the bright fill in both themes.
+
 ## Font
 - **Family**: `"Courier New", "Consolas", "Liberation Mono", monospace` (system monospace — zero network latency)
 - **Size**: 14px
@@ -27,6 +62,7 @@
 | H    | A/C/T       | `#A06070` | (160, 96, 112)  |
 | V    | A/C/G       | `#508080` | (80, 128, 128)  |
 | N    | Any         | `#575757` | (87, 87, 87)    |
+| `-`  | Gap         | theme     | flat background + muted dash, not a base color |
 
 ## Guanine Text Color Exception
 - G uses `#2C3E50` (dark) text instead of white, because `#F1C40F` yellow background has poor contrast with white text.
@@ -53,7 +89,15 @@
 - **Blink interval**: 530ms on / 530ms off
 
 ## Background
-- **Canvas background**: `#0A0E17` (very dark navy)
-- **Row alternating**: none (single background color)
-- **App background**: `#1A1A2E` (dark purple-navy)
-- **Panel background**: `#16213E` (dark blue)
+- **Row alternating**: none (single background color); the active row instead gets a
+  translucent accent wash
+
+## Stacked (alignment-view) Layout
+Used whenever more than one record is loaded; a single record keeps the wrapped view.
+- **Name gutter**: sized to the longest name, clamped to 90–220px, 10px padding,
+  ellipsis-truncated; 1px right border
+- **Shared ruler**: 24px, pinned to the top of the canvas, driven by horizontal scroll
+- **Row height**: same as the wrapped view's sequence row (cell height + 2px gap,
+  plus the complement row when shown)
+- **Unsaved marker**: 3px dot to the left of the name
+- Rows are unwrapped and virtualized in both axes

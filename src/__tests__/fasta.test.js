@@ -72,6 +72,24 @@ describe('parseFasta', () => {
     const records = parseFasta(text);
     expect(records[0].sequence).toBe('ATGCRYSWKMBDHVN');
   });
+
+  it('preserves alignment gaps', () => {
+    const text = '>test\nATG--CATG-C\n';
+    const records = parseFasta(text);
+    expect(records[0].sequence).toBe('ATG--CATG-C');
+  });
+
+  it("normalizes '.' gaps to '-'", () => {
+    const text = '>test\nATG..CATG.C\n';
+    const records = parseFasta(text);
+    expect(records[0].sequence).toBe('ATG--CATG-C');
+  });
+
+  it('keeps aligned records column-aligned', () => {
+    const text = '>a\nATG--CATGC\n>b\nATGAAC--GC\n';
+    const records = parseFasta(text);
+    expect(records[0].sequence.length).toBe(records[1].sequence.length);
+  });
 });
 
 describe('toFasta', () => {

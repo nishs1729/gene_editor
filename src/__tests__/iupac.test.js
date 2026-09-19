@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { IUPAC_MAP, COMPLEMENT_MAP, TEXT_COLOR_MAP, isValidChar, complement } from '../iupac.js';
+import { IUPAC_MAP, COMPLEMENT_MAP, TEXT_COLOR_MAP, isValidChar, complement, isGap, getCharInfo } from '../iupac.js';
 
 describe('IUPAC_MAP', () => {
   it('has all 15 IUPAC codes', () => {
@@ -87,12 +87,15 @@ describe('isValidChar', () => {
     }
   });
 
+  it('accepts the gap character so gaps can be typed and pasted', () => {
+    expect(isValidChar('-')).toBe(true);
+  });
+
   it('rejects invalid characters', () => {
     expect(isValidChar('X')).toBe(false);
     expect(isValidChar('1')).toBe(false);
     expect(isValidChar(' ')).toBe(false);
     expect(isValidChar('Z')).toBe(false);
-    expect(isValidChar('-')).toBe(false);
   });
 
   it('rejects empty and multi-char strings', () => {
@@ -122,9 +125,38 @@ describe('complement', () => {
     expect(complement('g')).toBe('C');
   });
 
+  it('leaves gaps as gaps', () => {
+    expect(complement('-')).toBe('-');
+  });
+
   it('returns null for invalid input', () => {
     expect(complement('X')).toBe(null);
     expect(complement('')).toBe(null);
     expect(complement(null)).toBe(null);
+  });
+});
+
+describe('gaps', () => {
+  it('recognizes both gap spellings', () => {
+    expect(isGap('-')).toBe(true);
+    expect(isGap('.')).toBe(true);
+    expect(isGap('A')).toBe(false);
+    expect(isGap('N')).toBe(false);
+  });
+
+  it('marks the gap entry so the renderer can style it separately', () => {
+    expect(IUPAC_MAP['-'].isGap).toBe(true);
+    expect(IUPAC_MAP.A.isGap).toBeUndefined();
+  });
+});
+
+describe('getCharInfo', () => {
+  it('returns the entry for known codes', () => {
+    expect(getCharInfo('A')).toBe(IUPAC_MAP.A);
+    expect(getCharInfo('-')).toBe(IUPAC_MAP['-']);
+  });
+
+  it('falls back to N for unknown characters', () => {
+    expect(getCharInfo('X')).toBe(IUPAC_MAP.N);
   });
 });
