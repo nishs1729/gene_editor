@@ -6,26 +6,45 @@
 //   stacked — several documents, one unwrapped row each under a shared ruler,
 //             with a name gutter on the left (Geneious alignment-view style)
 
-import { getCharInfo, TEXT_COLOR_MAP, complement } from './iupac.js';
+import { getCharInfo, TEXT_COLOR_MAP, complement, IUPAC_MAP } from './iupac.js';
 import { getConsensusColumn } from './sequenceModel.js';
 import { getTheme } from './theme.js';
 
 // --- Style constants (from geneiousStyleRef.md) ---
-const FONT_FAMILY = '"Courier New", "Consolas", "Liberation Mono", monospace';
+// System sans-serif stack: San Francisco on Mac, Segoe UI on Windows, Roboto on
+// Linux/Android — no web font request, so it loads with zero network latency and
+// keeps the "system" font-family philosophy the old monospace choice was made
+// under. Sans-serif is proportional, so cell width can no longer come from one
+// glyph's measurement — see the widest-glyph sizing in _applyMetrics.
+const FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+// Every character the grid ever has to draw in a base cell. The widest of these
+// sets the fixed column width, so no glyph — in any base's IUPAC letter — can
+// overflow the cell next to it.
+const GLYPH_CHARS = Object.keys(IUPAC_MAP).join('');
 const FONT_SIZE = 14;
 const COMPLEMENT_FONT_SIZE = 12;
 const NAME_FONT_SIZE = 12;
 const RULER_FONT_SIZE = 11;
 const CELL_PADDING = 6; // vertical padding added to font size
+const CELL_SPACING = 2; // horizontal breathing room between base cells
+// Zooming out past this leaves a glyph too small to read, so narrow columns drop
+// their letters and show colour alone — the overview of an alignment's shape.
+const MIN_GLYPH_FONT = 7;
+const MIN_CELL_WIDTH = 2;
 const ROW_GAP = 2;
 const RULER_HEIGHT = 24;
 const LEFT_MARGIN = 60; // single-mode gutter for position numbers
-const RULER_TICK_INTERVAL = 10;
 const CURSOR_WIDTH = 2;
+// Ruler labels step up through these as columns narrow, so the numbers never
+// collide however far the view is zoomed out.
+const RULER_INTERVALS = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+const MIN_LABEL_GAP = 55; // px between ruler labels before the interval steps up
+const MIN_MINOR_TICK_GAP = 20;
 
 // Stacked-mode name gutter
 const NAME_GUTTER_MIN = 90;
 const NAME_GUTTER_MAX = 220;
+const GUTTER_EDGE_PX = 4; // grab zone on the divider, either side
 const NAME_PADDING = 10;
 const RIGHT_PADDING = 20;
 const SELECTION_BAR_WIDTH = 3; // accent bar marking a selected row in the gutter
@@ -40,12 +59,8 @@ export class CanvasRenderer {
     this.ctx = canvas.getContext('2d');
     this.dpr = window.devicePixelRatio || 1;
     this.theme = getTheme('dark');
-
-    this.ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
-    const metrics = this.ctx.measureText('A');
-    this.cellWidth = Math.ceil(metrics.width) + 2; // +2 for inter-char spacing
-    this.cellHeight = FONT_SIZE + CELL_PADDING;
-    this.complementCellHeight = COMPLEMENT_FONT_SIZE + CELL_PADDING - 2;
+    this.zoom = 1;
+    this._applyMetrics();
 
     this.cursorVisible = true;
     this.cursorBlinkTimer = null;
@@ -58,6 +73,61 @@ export class CanvasRenderer {
 
   setTheme(name) {
     this.theme = getTheme(name);
+  }
+
+  /** @param {number} zoom - scale on the column width; 1 is one glyph wide. */
+  setZoom(zoom) {
+    if (zoom === this.zoom) return;
+    this.zoom = zoom;
+    this._applyMetrics();
+  }
+
+  /**
+   * Re-derive the metrics from the current zoom. Zoom is horizontal only: it
+   * stretches the base columns and nothing else, so row heights, the name gutter
+   * and the ruler stay put and the view never moves vertically as it scales.
+   */
+  _applyMetrics() {
+    this.ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+    const glyphWidth = this._widestGlyphWidth();
+
+    this.cellWidth = Math.max(MIN_CELL_WIDTH, Math.ceil((glyphWidth + CELL_SPACING) * this.zoom));
+    // The 1px seam is what separates cells at a readable size; on a 3px column it
+    // would eat a third of the colour, so narrow columns are drawn solid.
+    this.cellDrawWidth = this.cellWidth > 4 ? this.cellWidth - 1 : this.cellWidth;
+    this.cellHeight = FONT_SIZE + CELL_PADDING;
+    this.complementCellHeight = COMPLEMENT_FONT_SIZE + CELL_PADDING - 2;
+
+    this.fontSize = this._fitFont(FONT_SIZE, glyphWidth);
+    this.complementFontSize = this._fitFont(COMPLEMENT_FONT_SIZE, glyphWidth);
+  }
+
+  /** Width of the widest character a base cell ever draws, at `ctx.font`'s current size. */
+  _widestGlyphWidth() {
+    let max = 0;
+    for (const ch of GLYPH_CHARS) {
+      const w = this.ctx.measureText(ch).width;
+      if (w > max) max = w;
+    }
+    return max;
+  }
+
+  /**
+   * The largest size up to `preferred` whose glyph still fits the column, or 0
+   * when even the smallest readable glyph does not — letters are dropped rather
+   * than drawn as smudges. Letters never grow past `preferred`: that would be
+   * vertical zoom.
+   */
+  _fitFont(preferred, glyphWidth) {
+    const fits = Math.floor((this.cellWidth - 1) * FONT_SIZE / glyphWidth);
+    if (fits >= preferred) return preferred;
+    return fits >= MIN_GLYPH_FONT ? fits : 0;
+  }
+
+  /** Ruler label interval that keeps the numbers apart at this column width. */
+  getRulerInterval() {
+    return RULER_INTERVALS.find(i => i * this.cellWidth >= MIN_LABEL_GAP)
+      ?? RULER_INTERVALS[RULER_INTERVALS.length - 1];
   }
 
   /**
@@ -114,8 +184,17 @@ export class CanvasRenderer {
     return Math.ceil(ctx.measureText(`${count}.`).width) + 6;
   }
 
-  /** Width of the stacked-mode name gutter, sized to the longest name. */
+  /**
+   * Width of the stacked-mode name gutter: the width the divider was dragged to,
+   * or one sized to the longest name while it has never been dragged.
+   */
   getGutterWidth(state) {
+    const dragged = state.viewSettings.nameGutterWidth;
+    if (dragged != null) {
+      this._gutterWidth = Math.round(dragged);
+      return this._gutterWidth;
+    }
+
     const ctx = this.ctx;
     ctx.font = `${NAME_FONT_SIZE}px ${FONT_FAMILY}`;
     let widest = 0;
@@ -206,11 +285,11 @@ export class CanvasRenderer {
       const xAt = i => LEFT_MARGIN + (i - seqStart) * this.cellWidth;
 
       this._drawRowRuler(rowY, seqStart, seqEnd, xAt, LEFT_MARGIN);
-      this._drawBases(doc.raw, seqStart, seqEnd, xAt, baseY, this.cellHeight, FONT_SIZE, false);
+      this._drawBases(doc.raw, seqStart, seqEnd, xAt, baseY, this.cellHeight, this.fontSize, false);
       if (showComplement) {
         this._drawBases(
           doc.raw, seqStart, seqEnd, xAt, baseY + this.cellHeight,
-          this.complementCellHeight, COMPLEMENT_FONT_SIZE, true
+          this.complementCellHeight, this.complementFontSize, true
         );
       }
 
@@ -299,11 +378,11 @@ export class CanvasRenderer {
       const from = Math.min(firstCol, doc.raw.length);
       const to = Math.min(firstCol + visibleCols, doc.raw.length);
       const rowCompare = doc.id === referenceId ? null : compareAt;
-      this._drawBases(doc.raw, from, to, xAt, rowY, this.cellHeight, FONT_SIZE, false, rowCompare);
+      this._drawBases(doc.raw, from, to, xAt, rowY, this.cellHeight, this.fontSize, false, rowCompare);
       if (showComplement) {
         this._drawBases(
           doc.raw, from, to, xAt, rowY + this.cellHeight,
-          this.complementCellHeight, COMPLEMENT_FONT_SIZE, true, rowCompare
+          this.complementCellHeight, this.complementFontSize, true, rowCompare
         );
       }
 
@@ -362,7 +441,7 @@ export class CanvasRenderer {
     ctx.clip();
 
     const consensus = consensusWindow.join('');
-    this._drawBases(consensus, 0, consensus.length, i => xAt(firstCol + i), rowY, rowH, FONT_SIZE, false);
+    this._drawBases(consensus, 0, consensus.length, i => xAt(firstCol + i), rowY, rowH, this.fontSize, false);
     ctx.restore();
 
     // Spans the gutter too, so the consensus reads as a banded header across the
@@ -402,15 +481,21 @@ export class CanvasRenderer {
       const rowY = seqAreaTop + row * rowHeight - scroll.top;
       const isActive = doc.id === state.activeDocId;
       const isSelected = selectedDocIds.has(doc.id);
+      const isReference = doc.id === state.viewSettings.referenceDocId;
       const centerY = rowY + (rowHeight - ROW_GAP) / 2;
 
       // Selection reads as a highlighted row, with an accent bar at the left edge
-      // so it stays distinguishable from the (lighter) active-row tint.
+      // so it stays distinguishable from the (lighter) active-row tint. It outranks
+      // the reference wash because it is the transient state the user is acting on —
+      // setting a reference clears the selection, so the wash appears immediately after.
       if (isSelected) {
         ctx.fillStyle = this.theme.selectedRowBg;
         ctx.fillRect(0, rowY, gutter, rowHeight - ROW_GAP);
         ctx.fillStyle = this.theme.selectedRowBar;
         ctx.fillRect(0, rowY, SELECTION_BAR_WIDTH, rowHeight - ROW_GAP);
+      } else if (isReference) {
+        ctx.fillStyle = this.theme.referenceNameBg;
+        ctx.fillRect(0, rowY, gutter, rowHeight - ROW_GAP);
       } else if (isActive) {
         ctx.fillStyle = this.theme.activeRowBg;
         ctx.fillRect(0, rowY, gutter, rowHeight - ROW_GAP);
@@ -466,10 +551,14 @@ export class CanvasRenderer {
     ctx.font = `${RULER_FONT_SIZE}px ${FONT_FAMILY}`;
     ctx.textBaseline = 'top';
 
+    const interval = this.getRulerInterval();
+    const minorInterval = interval / 2;
+    const showMinor = minorInterval * this.cellWidth >= MIN_MINOR_TICK_GAP;
+
     for (let i = firstCol; i <= lastCol; i++) {
       const pos1 = i + 1;
       const x = xAt(i);
-      if (pos1 % RULER_TICK_INTERVAL === 0) {
+      if (pos1 % interval === 0) {
         ctx.strokeStyle = this.theme.rulerTick;
         ctx.beginPath();
         ctx.moveTo(x + this.cellWidth / 2, RULER_HEIGHT - 6);
@@ -479,7 +568,7 @@ export class CanvasRenderer {
         ctx.fillStyle = this.theme.rulerText;
         ctx.textAlign = 'center';
         ctx.fillText(`${pos1}`, x + this.cellWidth / 2, 4);
-      } else if (pos1 % 5 === 0) {
+      } else if (showMinor && pos1 % minorInterval === 0) {
         ctx.strokeStyle = this.theme.rulerTick;
         ctx.beginPath();
         ctx.moveTo(x + this.cellWidth / 2, RULER_HEIGHT - 3);
@@ -516,10 +605,14 @@ export class CanvasRenderer {
     ctx.textAlign = 'right';
     ctx.fillText(`${seqStart + 1}`, leftMargin - 6, rowY + 4);
 
+    const interval = this.getRulerInterval();
+    const minorInterval = interval / 2;
+    const showMinor = minorInterval * this.cellWidth >= MIN_MINOR_TICK_GAP;
+
     for (let i = seqStart; i < seqEnd; i++) {
       const pos1 = i + 1;
       const x = xAt(i);
-      if (pos1 % RULER_TICK_INTERVAL === 0) {
+      if (pos1 % interval === 0) {
         ctx.strokeStyle = this.theme.rulerTick;
         ctx.beginPath();
         ctx.moveTo(x + this.cellWidth / 2, rowY + RULER_HEIGHT - 6);
@@ -531,7 +624,7 @@ export class CanvasRenderer {
           ctx.textAlign = 'center';
           ctx.fillText(`${pos1}`, x + this.cellWidth / 2, rowY + 4);
         }
-      } else if (pos1 % 5 === 0) {
+      } else if (showMinor && pos1 % minorInterval === 0) {
         ctx.strokeStyle = this.theme.rulerTick;
         ctx.beginPath();
         ctx.moveTo(x + this.cellWidth / 2, rowY + RULER_HEIGHT - 3);
@@ -559,6 +652,8 @@ export class CanvasRenderer {
     const ctx = this.ctx;
     const bg = this._bgBuckets;
     const fg = this._fgBuckets;
+    // A zoomed-out column has no room for a letter; it is drawn as colour alone.
+    const withText = fontSize > 0;
     for (const arr of bg.values()) arr.length = 0;
     for (const arr of fg.values()) arr.length = 0;
 
@@ -582,29 +677,33 @@ export class CanvasRenderer {
         bucket.push(x);
       }
 
-      let glyphs = fg.get(fgColor);
-      if (!glyphs) { glyphs = []; fg.set(fgColor, glyphs); }
-      glyphs.push(x, ch);
+      if (withText) {
+        let glyphs = fg.get(fgColor);
+        if (!glyphs) { glyphs = []; fg.set(fgColor, glyphs); }
+        glyphs.push(x, ch);
+      }
     }
 
     const prevAlpha = ctx.globalAlpha;
     if (isComplement) ctx.globalAlpha = 0.5;
 
-    const cellW = this.cellWidth - 1;
+    const cellW = this.cellDrawWidth;
     const rectH = cellH - 1;
     for (const [color, xs] of bg) {
       ctx.fillStyle = color;
       for (let k = 0; k < xs.length; k++) ctx.fillRect(xs[k], y, cellW, rectH);
     }
 
-    ctx.font = `${fontSize}px ${FONT_FAMILY}`;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
-    const glyphY = y + cellH / 2;
-    for (const [color, glyphs] of fg) {
-      ctx.fillStyle = color;
-      for (let k = 0; k < glyphs.length; k += 2) {
-        ctx.fillText(glyphs[k + 1], glyphs[k] + this.cellWidth / 2, glyphY);
+    if (withText) {
+      ctx.font = `${fontSize}px ${FONT_FAMILY}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      const glyphY = y + cellH / 2;
+      for (const [color, glyphs] of fg) {
+        ctx.fillStyle = color;
+        for (let k = 0; k < glyphs.length; k += 2) {
+          ctx.fillText(glyphs[k + 1], glyphs[k] + this.cellWidth / 2, glyphY);
+        }
       }
     }
 
@@ -644,6 +743,7 @@ export class CanvasRenderer {
 
   /**
    * Resolve a canvas pixel to a hit. In stacked mode this is one of:
+   *   - { kind: 'gutterEdge' } — the divider at the right of the name gutter
    *   - { kind: 'ruler', index } — the shared ruler, for placing a column cursor
    *   - { kind: 'name', docId } — a row's name, in the gutter
    *   - { kind: 'seq', docId, index } — a sequence cell
@@ -657,6 +757,9 @@ export class CanvasRenderer {
 
     if (this.isStacked(state)) {
       const gutter = this._gutterWidth;
+      // The divider is grabbable along its whole length, the ruler included, and
+      // outranks what lies under it: a few pixels of name or base are no loss.
+      if (Math.abs(x - gutter) <= GUTTER_EDGE_PX) return { kind: 'gutterEdge' };
       if (y < RULER_HEIGHT) {
         if (x < gutter) return null;
         const maxLen = documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
@@ -714,5 +817,64 @@ export class CanvasRenderer {
       y: Math.floor(index / basesPerRow) * rowHeight - scroll.top + RULER_HEIGHT,
       height: contentHeight,
     };
+  }
+
+  // --- Zoom ---
+
+  /**
+   * Record what sits under a canvas point in content units (fractional column and
+   * row) that survive a zoom, so `getScrollForAnchor` can put it back under the
+   * same pixel once the metrics change. Points over the gutter or ruler clamp into
+   * the sequence area, so zooming works with the pointer anywhere on the canvas.
+   * @returns {object} an opaque anchor for `getScrollForAnchor`
+   */
+  getZoomAnchor(x, y, scroll, state) {
+    const { viewSettings } = state;
+
+    if (this.isStacked(state)) {
+      const gutter = this.getGutterWidth(state);
+      const seqAreaTop = this.getSeqAreaTop(state);
+      const px = Math.max(x, gutter);
+      const py = Math.max(y, seqAreaTop);
+      return {
+        mode: 'stacked',
+        col: (px - gutter + scroll.left) / this.cellWidth,
+        row: (py - seqAreaTop + scroll.top) / this.getRowHeight(viewSettings.showComplement),
+        x: px,
+        y: py,
+      };
+    }
+
+    // Single mode rewraps as the cell width changes, so the base index is what
+    // survives the zoom; the offset within its row is kept as a fraction.
+    const basesPerRow = this.getBasesPerRow(viewSettings.lineWidth);
+    const py = Math.max(y, 0);
+    const rowFloat = (py + scroll.top) / this.getSingleRowHeight(viewSettings.showComplement);
+    const row = Math.floor(rowFloat);
+    const col = Math.min(basesPerRow, Math.max(0, (x - LEFT_MARGIN) / this.cellWidth));
+    return { mode: 'single', index: row * basesPerRow + col, rowFraction: rowFloat - row, y: py };
+  }
+
+  /**
+   * Scroll offsets that put an anchor back under the pixel it was taken from,
+   * at the current zoom. Call after `setZoom`.
+   * @returns {{top: number, left: number}}
+   */
+  getScrollForAnchor(anchor, state) {
+    const { viewSettings } = state;
+
+    if (anchor.mode === 'stacked') {
+      const gutter = this.getGutterWidth(state);
+      const rowHeight = this.getRowHeight(viewSettings.showComplement);
+      return {
+        top: Math.max(0, anchor.row * rowHeight - (anchor.y - this.getSeqAreaTop(state))),
+        left: Math.max(0, anchor.col * this.cellWidth - (anchor.x - gutter)),
+      };
+    }
+
+    const basesPerRow = this.getBasesPerRow(viewSettings.lineWidth);
+    const rowHeight = this.getSingleRowHeight(viewSettings.showComplement);
+    const row = Math.floor(anchor.index / basesPerRow) + anchor.rowFraction;
+    return { top: Math.max(0, row * rowHeight - anchor.y), left: 0 };
   }
 }

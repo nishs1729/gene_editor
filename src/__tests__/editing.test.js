@@ -31,6 +31,7 @@ function makeStore() {
     replaceRange: vi.fn(),
     setCursorPos: vi.fn(),
     setColumnCursor: vi.fn(),
+    startRename: vi.fn(),
     substituteColumn: vi.fn(),
     insertColumn: vi.fn(),
     deleteColumn: vi.fn(),
@@ -340,5 +341,42 @@ describe('handler precedence', () => {
     context = { state: { documents: [], columnCursor: null }, doc: null, editingEnabled: true };
     expect(() => onKeyDown(key('a'))).not.toThrow();
     expect(store.insertAt).not.toHaveBeenCalled();
+  });
+});
+
+describe('renaming', () => {
+  it('opens the rename prompt for the focused row on F2', () => {
+    const doc = setup();
+    onKeyDown(key('F2'));
+    expect(store.startRename).toHaveBeenCalledWith(doc.id);
+  });
+
+  it('renames a single selected row in preference to the focused one', () => {
+    setup();
+    const other = context.state.documents[1];
+    context.state.selectedDocIds = new Set([other.id]);
+    onKeyDown(key('F2'));
+    expect(store.startRename).toHaveBeenCalledWith(other.id);
+  });
+
+  it('falls back to the focused row when the selection is ambiguous', () => {
+    const doc = setup();
+    context.state.selectedDocIds = new Set(context.state.documents.map(d => d.id));
+    onKeyDown(key('F2'));
+    expect(store.startRename).toHaveBeenCalledWith(doc.id);
+  });
+
+  it('works while the sequence is locked, since a name is not sequence data', () => {
+    const doc = setup({ editingEnabled: false });
+    onKeyDown(key('F2'));
+    expect(store.startRename).toHaveBeenCalledWith(doc.id);
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('renames rather than typing while a column cursor is placed', () => {
+    const doc = setup({ columnCursor: 4 });
+    onKeyDown(key('F2'));
+    expect(store.startRename).toHaveBeenCalledWith(doc.id);
+    expect(store.insertColumn).not.toHaveBeenCalled();
   });
 });

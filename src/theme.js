@@ -26,6 +26,9 @@ export const THEMES = {
     selectedRowBg: 'rgba(66, 135, 245, 0.30)',
     selectedRowBar: '#4285F5',
     selectedRowOverlay: 'rgba(66, 135, 245, 0.28)',
+    // Green rather than another blue, so the reference stays legible next to the
+    // blue selection and active-row tints.
+    referenceNameBg: 'rgba(72, 187, 120, 0.25)',
   },
   light: {
     canvasBg: '#FFFFFF',
@@ -50,6 +53,7 @@ export const THEMES = {
     selectedRowBg: 'rgba(45, 127, 249, 0.22)',
     selectedRowBar: '#2D7FF9',
     selectedRowOverlay: 'rgba(45, 127, 249, 0.22)',
+    referenceNameBg: 'rgba(39, 174, 96, 0.18)',
   },
 };
 

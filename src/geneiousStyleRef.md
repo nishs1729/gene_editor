@@ -28,6 +28,7 @@ them changes. Canvas-side values live in `theme.js`; the CSS equivalents live in
 | Active row highlight | `rgba(66,135,245,0.12)` | `rgba(45,127,249,0.08)` |
 | Drop marker (drag-to-move) | `#4285F5` | `#2D7FF9` |
 | Unsaved marker | `#E67E22` | `#D97706` |
+| Reference name background | `rgba(72,187,120,0.25)` | `rgba(39,174,96,0.18)` |
 
 The light theme is pinned to `temp_screenshot_geneious.png` (Geneious Alignment View).
 
@@ -36,8 +37,17 @@ The stats readout is the one place a base color is overridden per theme: `G`'s
 label only. The canvas keeps the bright fill in both themes.
 
 ## Font
-- **Family**: `"Courier New", "Consolas", "Liberation Mono", monospace` (system monospace — zero network latency)
-- **Size**: 14px
+- **Family**: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`
+  (system sans-serif — zero network latency, native look on every OS). Used
+  everywhere, base letters included. Sans-serif is proportional, so the base grid
+  can't size its columns off one glyph's measurement the way a monospace font
+  could — `cellWidth` is sized to the *widest* character across every IUPAC code
+  and the gap dash, so no letter ever overflows the fixed-width cell next to it.
+- **Size**: 14px, fixed. Ctrl+wheel zoom is **horizontal only** (0.2×–4×, anchored
+  on the base under the pointer): it scales the column width and nothing else, so
+  row heights, the name gutter and the ruler never move vertically. Letters shrink
+  to fit a narrowed column and are dropped below 7px, leaving colour bars; they
+  never grow past 14px, which would be vertical zoom.
 - **Weight**: normal (400)
 - **Text color on base cells**: `#FFFFFF` (white)
 - **Ruler text color**: `#8892B0`
@@ -68,11 +78,14 @@ label only. The canvas keeps the bright fill in both themes.
 - G uses `#2C3E50` (dark) text instead of white, because `#F1C40F` yellow background has poor contrast with white text.
 
 ## Layout Dimensions
-- **Cell width**: measured dynamically via `ctx.measureText('A').width`, ceiled to integer
+- **Cell width**: measured dynamically as the widest of every IUPAC code and the
+  gap dash (see Font, above), scaled by zoom and ceiled to integer
 - **Cell height**: fontSize + 6px padding (i.e., 20px at 14px font)
 - **Row gap**: 2px between sequence rows (or sequence+complement pairs)
 - **Ruler height**: 24px
-- **Ruler tick interval**: every 10 bases (small tick), label every 10 bases
+- **Ruler tick interval**: labels every 10 bases at zoom 1, stepping up through
+  20/50/100/… as columns narrow so labels stay ≥55px apart; minor ticks at half
+  the label interval, dropped below 20px spacing
 - **Left margin (ruler number gutter)**: 60px (enough for 6-digit position numbers)
 
 ## Complement Row
@@ -95,9 +108,13 @@ label only. The canvas keeps the bright fill in both themes.
 ## Stacked (alignment-view) Layout
 Used whenever more than one record is loaded; a single record keeps the wrapped view.
 - **Name gutter**: sized to the longest name, clamped to 90–220px, 10px padding,
-  ellipsis-truncated; 1px right border
+  ellipsis-truncated; 1px right border. Dragging that border resizes the column
+  (40–600px) and pins the width until it is cleared; the grab zone is 4px either
+  side of the border and runs the full height, ruler included.
 - **Shared ruler**: 24px, pinned to the top of the canvas, driven by horizontal scroll
 - **Row height**: same as the wrapped view's sequence row (cell height + 2px gap,
   plus the complement row when shown)
 - **Unsaved marker**: 3px dot to the left of the name
+- **Reference row**: its name cell gets a green wash. A selected row's blue wins
+  while the row is selected, which it no longer is once a reference is set.
 - Rows are unwrapped and virtualized in both axes

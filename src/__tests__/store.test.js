@@ -15,7 +15,8 @@ function makeLocalStorage() {
 const storage = makeLocalStorage();
 vi.stubGlobal('localStorage', storage);
 
-const { default: useStore, getActiveDoc } = await import('../store.js');
+const { default: useStore, getActiveDoc, MIN_ZOOM, MAX_ZOOM, MIN_GUTTER_WIDTH, MAX_GUTTER_WIDTH } =
+  await import('../store.js');
 
 const RECORDS = [
   { name: 'alpha', sequence: 'ACGTACGT' },
@@ -41,8 +42,10 @@ beforeEach(() => {
         showConsensus: true,
         consensusThreshold: 0.5,
         highlightMode: 'none',
-        referenceDocId: s.workspace.documents[0]?.id ?? null,
+        referenceDocId: null,
         fullscreen: false,
+        zoom: 1,
+        nameGutterWidth: null,
       },
     },
     toast: null,
@@ -73,7 +76,7 @@ describe('loadWorkspace', () => {
     expect(ws().selectedDocIds.size).toBe(0);
     expect(ws().columnCursor).toBe(null);
     expect(ws().viewSettings.referenceDocId).not.toBe(staleId);
-    expect(ws().viewSettings.referenceDocId).toBe(ids()[0]);
+    expect(ws().viewSettings.referenceDocId).toBe(null);
   });
 });
 
@@ -119,11 +122,149 @@ describe('highlighting', () => {
   });
 
   it('keeps an explicitly chosen reference across mode changes', () => {
-    get().setReferenceDocId(ids()[2]);
+    get().toggleReferenceDoc(ids()[2]);
     get().setHighlightMode('reference');
     expect(ws().viewSettings.referenceDocId).toBe(ids()[2]);
     get().setHighlightMode('none');
     expect(ws().viewSettings.referenceDocId).toBe(ids()[2]);
+  });
+});
+
+describe('zoom', () => {
+  it('starts at the base font size', () => {
+    expect(ws().viewSettings.zoom).toBe(1);
+  });
+
+  it('sets a zoom factor', () => {
+    get().setZoom(2);
+    expect(ws().viewSettings.zoom).toBe(2);
+  });
+
+  it('clamps to the range the canvas stays legible in', () => {
+    get().setZoom(99);
+    expect(ws().viewSettings.zoom).toBe(MAX_ZOOM);
+    get().setZoom(0.001);
+    expect(ws().viewSettings.zoom).toBe(MIN_ZOOM);
+  });
+});
+
+describe('name column width', () => {
+  it('sizes itself to the names until it is dragged', () => {
+    expect(ws().viewSettings.nameGutterWidth).toBe(null);
+  });
+
+  it('takes a dragged width', () => {
+    get().setNameGutterWidth(240);
+    expect(ws().viewSettings.nameGutterWidth).toBe(240);
+  });
+
+  it('rounds to whole pixels', () => {
+    get().setNameGutterWidth(180.6);
+    expect(ws().viewSettings.nameGutterWidth).toBe(181);
+  });
+
+  it('clamps a drag past either end', () => {
+    get().setNameGutterWidth(5000);
+    expect(ws().viewSettings.nameGutterWidth).toBe(MAX_GUTTER_WIDTH);
+    get().setNameGutterWidth(-40);
+    expect(ws().viewSettings.nameGutterWidth).toBe(MIN_GUTTER_WIDTH);
+  });
+
+  it('goes back to sizing itself when cleared', () => {
+    get().setNameGutterWidth(240);
+    get().setNameGutterWidth(null);
+    expect(ws().viewSettings.nameGutterWidth).toBe(null);
+  });
+});
+
+describe('reference sequence', () => {
+  it('makes a sequence the reference, and a second toggle clears it', () => {
+    get().toggleReferenceDoc(ids()[1]);
+    expect(ws().viewSettings.referenceDocId).toBe(ids()[1]);
+    get().toggleReferenceDoc(ids()[1]);
+    expect(ws().viewSettings.referenceDocId).toBe(null);
+  });
+
+  it('moves the reference straight to another sequence', () => {
+    get().toggleReferenceDoc(ids()[1]);
+    get().toggleReferenceDoc(ids()[2]);
+    expect(ws().viewSettings.referenceDocId).toBe(ids()[2]);
+  });
+
+  it('clears the row selection, which would otherwise cover the reference tint', () => {
+    get().toggleDocSelection(ids()[1]);
+    get().toggleReferenceDoc(ids()[1]);
+    expect(ws().selectedDocIds.size).toBe(0);
+  });
+
+  it('turns reference highlighting off when the reference is removed', () => {
+    get().toggleReferenceDoc(ids()[1]);
+    get().setHighlightMode('reference');
+    get().toggleReferenceDoc(ids()[1]);
+    expect(ws().viewSettings.highlightMode).toBe('none');
+  });
+
+  it('leaves consensus highlighting alone', () => {
+    get().setHighlightMode('consensus');
+    get().toggleReferenceDoc(ids()[1]);
+    get().toggleReferenceDoc(ids()[1]);
+    expect(ws().viewSettings.highlightMode).toBe('consensus');
+  });
+
+  it('drops a reference that gets deleted', () => {
+    get().toggleReferenceDoc(ids()[1]);
+    get().toggleDocSelection(ids()[1]);
+    get().deleteSelectedDocs();
+    expect(ws().viewSettings.referenceDocId).toBe(null);
+  });
+
+  it('keeps a reference that survives the deletion', () => {
+    const reference = ids()[0];
+    get().toggleReferenceDoc(reference);
+    get().toggleDocSelection(ids()[2]);
+    get().deleteSelectedDocs();
+    expect(ws().viewSettings.referenceDocId).toBe(reference);
+  });
+});
+
+describe('renaming', () => {
+  it('opens and cancels the rename prompt', () => {
+    get().startRename(ids()[1]);
+    expect(ws().renamingDocId).toBe(ids()[1]);
+    get().cancelRename();
+    expect(ws().renamingDocId).toBe(null);
+  });
+
+  it('renames a sequence, marks it unsaved and closes the prompt', () => {
+    get().startRename(ids()[1]);
+    get().renameDoc(ids()[1], 'beta v2');
+    expect(docs()[1].name).toBe('beta v2');
+    expect(docs()[1].dirty).toBe(true);
+    expect(ws().renamingDocId).toBe(null);
+  });
+
+  it('trims surrounding whitespace', () => {
+    get().renameDoc(ids()[1], '  beta v2  ');
+    expect(docs()[1].name).toBe('beta v2');
+  });
+
+  it('rejects an empty name, which would leave the row unidentifiable', () => {
+    get().renameDoc(ids()[1], '   ');
+    expect(docs()[1].name).toBe('beta');
+    expect(docs()[1].dirty).toBe(false);
+  });
+
+  it('leaves the document untouched when the name has not changed', () => {
+    const before = docs()[1];
+    get().renameDoc(ids()[1], 'beta');
+    expect(docs()[1]).toBe(before);
+  });
+
+  it('saves the new name', () => {
+    get().renameDoc(ids()[1], 'beta v2');
+    get().save();
+    const saved = JSON.parse(storage.getItem('geneEditor.workspace'));
+    expect(saved.documents[1].name).toBe('beta v2');
   });
 });
 

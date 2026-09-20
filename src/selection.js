@@ -18,7 +18,7 @@ function docById(state, id) {
  * @returns {object} { onMouseDown, onMouseMove, destroy }
  */
 export function createMouseHandlers(renderer, getContext, store) {
-  let gesture = null; // 'select' | 'resize' | 'move' | null
+  let gesture = null; // 'select' | 'resize' | 'move' | 'gutter' | null
   let anchor = null;      // fixed end for 'select' / 'resize'
   let moveSelection = null; // { start, end } being dragged
   let dropIndex = null;
@@ -50,6 +50,13 @@ export function createMouseHandlers(renderer, getContext, store) {
     // suppresses the focus the canvas needs to receive key events, so focus it here.
     e.preventDefault();
     renderer.canvas.focus();
+
+    if (hit.kind === 'gutterEdge') {
+      gesture = 'gutter';
+      renderer.canvas.style.cursor = 'col-resize';
+      startTracking();
+      return;
+    }
 
     if (hit.kind === 'ruler') {
       // Ruler click places a column cursor spanning every row — editing-only,
@@ -140,6 +147,10 @@ export function createMouseHandlers(renderer, getContext, store) {
       canvas.style.cursor = 'default';
       return;
     }
+    if (hit.kind === 'gutterEdge') {
+      canvas.style.cursor = 'col-resize';
+      return;
+    }
     if (hit.kind === 'name') {
       canvas.style.cursor = 'pointer';
       return;
@@ -165,9 +176,17 @@ export function createMouseHandlers(renderer, getContext, store) {
 
   function onDragMove(e) {
     const { x, y } = toCanvasXY(e);
+
+    // The divider follows the pointer directly — the gutter starts at x = 0, so
+    // the pointer's x is the width.
+    if (gesture === 'gutter') {
+      store.setNameGutterWidth(x);
+      return;
+    }
+
     const { state, scroll } = getContext();
     const hit = renderer.hitTest(x, y, scroll, state);
-    if (!hit || hit.kind === 'name' || hit.kind === 'ruler') return;
+    if (!hit || hit.kind === 'name' || hit.kind === 'ruler' || hit.kind === 'gutterEdge') return;
 
     if (gesture === 'select' || gesture === 'resize') {
       store.setSelection(anchor, hit.index);

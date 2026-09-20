@@ -8,6 +8,7 @@ const { createDocument } = await import('../sequenceModel.js');
 // A canvas context stub with a predictable metric: every glyph is 8px wide, so
 // cellWidth is 10 (8 rounded up, +2 spacing) and cellHeight is 20 (14pt + 6 pad).
 const GLYPH = 8;
+const BASE_FONT = 14;
 const CELL_W = 10;
 const CELL_H = 20;
 const ROW_GAP = 2;
@@ -550,5 +551,193 @@ describe('rendering', () => {
 
   it('renders an empty workspace', () => {
     expect(() => r.render({ documents: [], viewSettings: {} }, { top: 0, left: 0 })).not.toThrow();
+  });
+});
+
+describe('reference sequence marker', () => {
+  let state, gutter, top;
+  const rowYAt = row => top + row * ROW_H;
+
+  beforeEach(() => {
+    state = stackedState(4, 20);
+    state.viewSettings.referenceDocId = state.documents[2].id;
+    gutter = r.getGutterWidth(state);
+    top = r.getSeqAreaTop(state);
+  });
+
+  it('washes the name cell of the reference row', () => {
+    r.render(state, { top: 0, left: 0 });
+    const fill = r.drawn.rects.find(t => t.y === rowYAt(2) && t.style === r.theme.referenceNameBg);
+    expect(fill).toMatchObject({ x: 0, w: gutter });
+  });
+
+  it('leaves the sequence area of the reference row uncoloured', () => {
+    r.render(state, { top: 0, left: 0 });
+    const outsideGutter = r.drawn.rects.filter(
+      t => t.style === r.theme.referenceNameBg && t.x !== 0
+    );
+    expect(outsideGutter).toHaveLength(0);
+  });
+
+  it('marks nothing when no sequence is the reference', () => {
+    state.viewSettings.referenceDocId = null;
+    r.render(state, { top: 0, left: 0 });
+    expect(r.drawn.rects.some(t => t.style === r.theme.referenceNameBg)).toBe(false);
+  });
+
+  it('yields to the selection highlight while the reference row is selected', () => {
+    state.selectedDocIds = new Set([state.documents[2].id]);
+    r.render(state, { top: 0, left: 0 });
+    const at2 = style => r.drawn.rects.some(t => t.y === rowYAt(2) && t.style === style);
+    expect(at2(r.theme.referenceNameBg)).toBe(false);
+    expect(at2(r.theme.selectedRowBg)).toBe(true);
+  });
+});
+
+describe('zoom', () => {
+  let z;
+  beforeEach(() => { z = makeRenderer(); });
+
+  it('stretches the columns and nothing else', () => {
+    const rowHeight = z.getRowHeight(false);
+    z.setZoom(2);
+    expect(z.cellWidth).toBe(2 * CELL_W);
+    expect(z.cellHeight).toBe(CELL_H);
+    expect(z.getRowHeight(false)).toBe(rowHeight);
+  });
+
+  it('leaves the vertical layout alone at every zoom', () => {
+    const state = stackedState(8, 40);
+    const before = z.getContentSize(state).height;
+    for (const zoom of [0.2, 0.5, 2, 4]) {
+      z.setZoom(zoom);
+      expect(z.getContentSize(state).height, `zoom ${zoom}`).toBe(before);
+      expect(z.getSeqAreaTop(state), `zoom ${zoom}`).toBe(RULER_H + CELL_H + ROW_GAP + SEPARATOR);
+    }
+  });
+
+  it('leaves the name gutter alone at every zoom', () => {
+    const state = stackedState(8, 40);
+    const before = z.getGutterWidth(state);
+    z.setZoom(4);
+    expect(z.getGutterWidth(state)).toBe(before);
+    z.setZoom(0.2);
+    expect(z.getGutterWidth(state)).toBe(before);
+  });
+
+  it('never grows the letters past their base size, which would be vertical zoom', () => {
+    z.setZoom(4);
+    expect(z.fontSize).toBe(BASE_FONT);
+  });
+
+  it('shrinks the letters to fit a narrowed column, then drops them', () => {
+    z.setZoom(0.6);
+    expect(z.fontSize).toBeGreaterThan(0);
+    expect(z.fontSize).toBeLessThan(BASE_FONT);
+
+    z.setZoom(0.2);
+    expect(z.fontSize).toBe(0); // colour blocks only
+  });
+
+  it('draws colour without letters once the columns are too narrow', () => {
+    const state = stackedState(4, 40);
+    z.setZoom(0.2);
+    z.render(state, { top: 0, left: 0 });
+    const gutter = z.getGutterWidth(state);
+    expect(z.drawn.rects.some(t => t.x > gutter && t.w === z.cellDrawWidth)).toBe(true);
+    expect(z.drawn.glyphs.some(g => 'ACGT'.includes(g.text))).toBe(false);
+  });
+
+  it('steps the ruler interval up as the columns narrow', () => {
+    expect(z.getRulerInterval()).toBe(10);
+    z.setZoom(0.4);
+    expect(z.getRulerInterval()).toBeGreaterThan(10);
+    z.setZoom(0.2);
+    expect(z.getRulerInterval() * z.cellWidth).toBeGreaterThanOrEqual(55);
+  });
+
+  it('keeps the base under the pointer in place in the stacked view', () => {
+    const state = stackedState(8, 400);
+    const gutter = z.getGutterWidth(state); // hitTest reads the cached width
+    const scroll = { top: 3 * ROW_H, left: 10 * CELL_W };
+    // On exact cell and row boundaries, so hitTest rounding cannot mask a drift.
+    const x = gutter + 20 * CELL_W;
+    const y = z.getSeqAreaTop(state) + 2 * ROW_H;
+    const before = z.hitTest(x, y, scroll, state);
+
+    const anchor = z.getZoomAnchor(x, y, scroll, state);
+    z.setZoom(2);
+    const after = z.getScrollForAnchor(anchor, state);
+    z.getGutterWidth(state);
+
+    expect(z.hitTest(x, y, after, state)).toEqual(before);
+  });
+
+  it('keeps the anchored base within a row of the pointer as the wrapped view reflows', () => {
+    const state = stackedState(1, 4000);
+    const scroll = { top: 5 * z.getSingleRowHeight(false), left: 0 };
+    const x = 400;
+    const y = 200;
+    const index = z.hitTest(x, y, scroll, state).index;
+
+    const anchor = z.getZoomAnchor(x, y, scroll, state);
+    z.setZoom(2);
+    const after = z.getScrollForAnchor(anchor, state);
+
+    const px = z.indexToPixel(index, after, state, state.documents[0].id);
+    expect(Math.abs(px.y - y)).toBeLessThanOrEqual(z.getSingleRowHeight(false));
+  });
+
+  it('never scrolls past the start of the content when zooming out at the top', () => {
+    const state = stackedState(8, 400);
+    const anchor = z.getZoomAnchor(0, 0, { top: 0, left: 0 }, state);
+    z.setZoom(0.4);
+    expect(z.getScrollForAnchor(anchor, state)).toEqual({ top: 0, left: 0 });
+  });
+});
+
+
+describe('resizable name column', () => {
+  const scroll = { top: 0, left: 0 };
+
+  it('uses the dragged width in place of the measured one', () => {
+    const state = stackedState(4, 20);
+    const measured = r.getGutterWidth(state);
+    state.viewSettings.nameGutterWidth = 300;
+    expect(r.getGutterWidth(state)).toBe(300);
+    expect(measured).not.toBe(300);
+  });
+
+  it('goes back to sizing itself when the width is cleared', () => {
+    const state = stackedState(4, 20);
+    const measured = r.getGutterWidth(state);
+    state.viewSettings.nameGutterWidth = 300;
+    r.getGutterWidth(state);
+    state.viewSettings.nameGutterWidth = null;
+    expect(r.getGutterWidth(state)).toBe(measured);
+  });
+
+  it('starts the sequences at the dragged edge', () => {
+    const state = stackedState(4, 20);
+    state.viewSettings.nameGutterWidth = 300;
+    expect(r.getContentSize(state).width).toBe(300 + 20 * CELL_W + 20);
+    r.render(state, scroll);
+    expect(r.drawn.cellRect(300, r.getSeqAreaTop(state))).toBeDefined();
+  });
+
+  it('resolves the divider, and the name and sequence either side of it', () => {
+    const state = stackedState(4, 20);
+    const gutter = r.getGutterWidth(state);
+    const y = r.getSeqAreaTop(state) + 2;
+    expect(r.hitTest(gutter, y, scroll, state)).toEqual({ kind: 'gutterEdge' });
+    expect(r.hitTest(gutter - 3, y, scroll, state)).toEqual({ kind: 'gutterEdge' });
+    expect(r.hitTest(gutter - 8, y, scroll, state).kind).toBe('name');
+    expect(r.hitTest(gutter + 8, y, scroll, state).kind).toBe('seq');
+  });
+
+  it('offers the divider along the ruler as well', () => {
+    const state = stackedState(4, 20);
+    const gutter = r.getGutterWidth(state);
+    expect(r.hitTest(gutter, 8, scroll, state)).toEqual({ kind: 'gutterEdge' });
   });
 });

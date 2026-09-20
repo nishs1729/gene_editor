@@ -20,6 +20,7 @@ function makeStore() {
     toggleDocSelection: vi.fn(),
     clearDocSelection: vi.fn(),
     selectDocRange: vi.fn(),
+    setNameGutterWidth: vi.fn(),
     showToast: vi.fn(),
   };
 }
@@ -344,5 +345,53 @@ describe('mouse handling', () => {
     hit = { kind: 'name', docId: state.documents[0].id };
     handlers.onMouseMove(mouse());
     expect(canvas.style.cursor).toBe('pointer');
+  });
+});
+
+
+describe('dragging the name-column divider', () => {
+  let store, renderer, hit, handlers, canvas;
+
+  const mouse = (opts = {}) =>
+    ({ clientX: 100, clientY: 100, detail: 1, shiftKey: false, preventDefault: vi.fn(), ...opts });
+  /** The window-level move handler selection.js installs for the duration of a drag. */
+  const dragMove = () => window.addEventListener.mock.calls.find(c => c[0] === 'mousemove')[1];
+
+  beforeEach(() => {
+    window.addEventListener.mockClear();
+    store = makeStore();
+    hit = { kind: 'gutterEdge' };
+    canvas = { style: {}, focus: vi.fn(), getBoundingClientRect: () => ({ left: 0, top: 0 }) };
+    renderer = { canvas, hitTest: () => hit, indexToPixel: () => null };
+    handlers = createMouseHandlers(renderer, () => ({
+      state: {
+        documents: [createDocument('a', 'ACGT'), createDocument('b', 'ACGT')],
+        activeDocId: null,
+        selectedDocIds: new Set(),
+        columnCursor: null,
+      },
+      scroll: { top: 0, left: 0 },
+      editingEnabled: true,
+    }), store);
+  });
+
+  it('shows a resize cursor over the divider', () => {
+    handlers.onMouseMove(mouse());
+    expect(canvas.style.cursor).toBe('col-resize');
+  });
+
+  it('resizes the column to the pointer', () => {
+    handlers.onMouseDown(mouse({ clientX: 150 }));
+    dragMove()({ clientX: 210, clientY: 120 });
+    expect(store.setNameGutterWidth).toHaveBeenCalledWith(210);
+  });
+
+  it('moves no cursor and selects nothing while resizing', () => {
+    handlers.onMouseDown(mouse({ clientX: 150 }));
+    dragMove()({ clientX: 210, clientY: 120 });
+    expect(store.setSelection).not.toHaveBeenCalled();
+    expect(store.setCursorPos).not.toHaveBeenCalled();
+    expect(store.setActiveDoc).not.toHaveBeenCalled();
+    expect(store.setColumnCursor).not.toHaveBeenCalled();
   });
 });

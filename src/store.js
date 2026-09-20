@@ -19,6 +19,27 @@ import { DEFAULT_THEME } from './theme.js';
 const STORAGE_KEY = 'geneEditor.workspace';
 const THEME_KEY = 'geneEditor.theme';
 
+// Zoom range, in multiples of a base column's natural width. Zoom is horizontal
+// only: at the low end columns become colour bars for reading an alignment's
+// shape, at the high end they are wide enough to pick a single base out of.
+export const MIN_ZOOM = 0.2;
+export const MAX_ZOOM = 4;
+
+/** @param {number} zoom */
+export function clampZoom(zoom) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+}
+
+// How far the name column can be dragged: narrow enough to be nearly out of the
+// way, wide enough for the long names sequencing pipelines produce.
+export const MIN_GUTTER_WIDTH = 40;
+export const MAX_GUTTER_WIDTH = 600;
+
+/** @param {number} px */
+export function clampGutterWidth(px) {
+  return Math.round(Math.min(MAX_GUTTER_WIDTH, Math.max(MIN_GUTTER_WIDTH, px)));
+}
+
 const EMPTY_STATS = { length: 0, ungappedLength: 0, gaps: 0, gcPercent: 0, counts: {} };
 
 function loadPersistedTheme() {
@@ -99,12 +120,15 @@ const useStore = create((set, get) => {
         highlightMode: 'none', // 'none' | 'consensus' | 'reference' — grey out agreeing bases
         referenceDocId: null, // which document 'reference' highlighting compares against
         fullscreen: false,
+        zoom: 1, // ctrl+wheel scale on the width of a base column
+        nameGutterWidth: null, // null = sized to the longest name; a number = dragged
       },
       editingEnabled: false,
       dragInsertIndex: null, // transient drag-to-move preview position
       selectedDocIds: new Set(), // row (whole-sequence) multi-select, for deletion
       lastSelectionClickId: null, // anchor for shift-click range-select on rows
       columnCursor: null, // alignment-column index; typing edits every row at this column
+      renamingDocId: null, // document whose name the rename dialog is editing
     },
 
     theme: loadPersistedTheme(),
@@ -127,8 +151,10 @@ const useStore = create((set, get) => {
           dragInsertIndex: null,
           selectedDocIds: new Set(),
           columnCursor: null,
-          // The old reference belongs to documents that are gone.
-          viewSettings: { ...workspace.viewSettings, referenceDocId: documents[0]?.id ?? null },
+          renamingDocId: null,
+          // The old reference belongs to documents that are gone, and a reference
+          // is an explicit choice, so the new workspace starts without one.
+          viewSettings: { ...workspace.viewSettings, referenceDocId: null },
         },
         stats: documents[0] ? getStats(documents[0].raw) : EMPTY_STATS,
       });
@@ -204,6 +230,14 @@ const useStore = create((set, get) => {
 
     setLineWidth: (n) => patchViewSettings({ lineWidth: n }),
 
+    /** @param {number} zoom - multiple of the base column width; clamped to the legible range. */
+    setZoom: (zoom) => patchViewSettings({ zoom: clampZoom(zoom) }),
+
+    /** @param {number|null} px - null restores sizing to the longest name. */
+    setNameGutterWidth: (px) => patchViewSettings({
+      nameGutterWidth: px === null ? null : clampGutterWidth(px),
+    }),
+
     toggleFullscreen: () => patchViewSettings({
       fullscreen: !get().workspace.viewSettings.fullscreen,
     }),
@@ -243,7 +277,59 @@ const useStore = create((set, get) => {
       });
     },
 
-    setReferenceDocId: (id) => patchViewSettings({ referenceDocId: id }),
+    /**
+     * Make `id` the reference sequence, or clear the reference if it already is.
+     * @param {string} id
+     */
+    toggleReferenceDoc: (id) => {
+      const { workspace } = get();
+      const { viewSettings } = workspace;
+      const wasReference = viewSettings.referenceDocId === id;
+      set({
+        workspace: {
+          ...workspace,
+          // The row selection has served its purpose; clearing it uncovers the
+          // reference tint in the gutter, which a selected row would paint over.
+          selectedDocIds: new Set(),
+          viewSettings: {
+            ...viewSettings,
+            referenceDocId: wasReference ? null : id,
+            // Highlighting against a reference that no longer exists would
+            // silently fall back to the first sequence, so turn it off instead.
+            highlightMode: wasReference && viewSettings.highlightMode === 'reference'
+              ? 'none'
+              : viewSettings.highlightMode,
+          },
+        },
+      });
+    },
+
+    // --- Renaming ---
+
+    startRename: (id) => {
+      const { workspace } = get();
+      set({ workspace: { ...workspace, renamingDocId: id } });
+    },
+
+    cancelRename: () => {
+      const { workspace } = get();
+      if (workspace.renamingDocId === null) return;
+      set({ workspace: { ...workspace, renamingDocId: null } });
+    },
+
+    /** Rename a document. An empty name is rejected — a nameless row is unidentifiable. */
+    renameDoc: (id, name) => {
+      const { workspace } = get();
+      const index = workspace.documents.findIndex(d => d.id === id);
+      const trimmed = name.trim();
+      if (index === -1 || trimmed === '' || trimmed === workspace.documents[index].name) {
+        set({ workspace: { ...workspace, renamingDocId: null } });
+        return;
+      }
+      const documents = [...workspace.documents];
+      documents[index] = { ...documents[index], name: trimmed, dirty: true };
+      set({ workspace: { ...workspace, documents, renamingDocId: null } });
+    },
 
     // --- Row (whole-sequence) multi-select, for deletion ---
 
@@ -293,6 +379,9 @@ const useStore = create((set, get) => {
           activeDocId,
           selectedDocIds: new Set(),
           columnCursor: null,
+          viewSettings: selectedDocIds.has(workspace.viewSettings.referenceDocId)
+            ? { ...workspace.viewSettings, referenceDocId: null }
+            : workspace.viewSettings,
         },
         stats: documents.find(d => d.id === activeDocId)
           ? getStats(documents.find(d => d.id === activeDocId).raw)

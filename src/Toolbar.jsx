@@ -7,6 +7,12 @@ import { parseFasta, toFasta } from './fasta.js';
 // Matches the percentages Geneious offers on its own consensus threshold control.
 const CONSENSUS_THRESHOLDS = [0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1];
 
+/** Sequence names are free text; a download filename is not. */
+function safeFileName(name) {
+  const cleaned = (name || '').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
+  return cleaned || 'sequence';
+}
+
 export default function Toolbar() {
   const fileInputRef = useRef(null);
 
@@ -23,14 +29,21 @@ export default function Toolbar() {
   const toggleConsensus = useStore(s => s.toggleConsensus);
   const setConsensusThreshold = useStore(s => s.setConsensusThreshold);
   const setHighlightMode = useStore(s => s.setHighlightMode);
-  const setReferenceDocId = useStore(s => s.setReferenceDocId);
   const reverseComplementActive = useStore(s => s.reverseComplementActive);
   const save = useStore(s => s.save);
   const showToast = useStore(s => s.showToast);
   const deleteSelectedDocs = useStore(s => s.deleteSelectedDocs);
 
+  const toggleReferenceDoc = useStore(s => s.toggleReferenceDoc);
+
   const { editingEnabled, viewSettings, selectedDocIds } = workspace;
   const hasSequence = (activeDoc?.raw.length ?? 0) > 0;
+  const hasExportable = workspace.documents.some(d => d.raw.length > 0);
+  // The reference is a single sequence, so the button only acts on an unambiguous
+  // selection of one.
+  const singleSelectedId = selectedDocIds.size === 1 ? [...selectedDocIds][0] : null;
+  const selectedIsReference = singleSelectedId !== null
+    && viewSettings.referenceDocId === singleSelectedId;
   const canUndo = editingEnabled && (activeDoc?.history.length ?? 0) > 0;
   const canRedo = editingEnabled && (activeDoc?.future.length ?? 0) > 0;
   const isDirty = workspace.documents.some(d => d.dirty);
@@ -60,20 +73,33 @@ export default function Toolbar() {
     e.target.value = ''; // allow re-loading the same file
   }
 
+  /** Exports the selected sequences, or every sequence when none are selected. */
   function handleExport() {
-    if (!activeDoc || !hasSequence) {
-      showToast('No sequence to export', 'warning');
+    const { documents } = workspace;
+    const targets = (selectedDocIds.size > 0
+      ? documents.filter(d => selectedDocIds.has(d.id))
+      : documents
+    ).filter(d => d.raw.length > 0);
+
+    if (targets.length === 0) {
+      showToast('No sequences to export', 'warning');
       return;
     }
-    const name = activeDoc.name || 'sequence';
-    const blob = new Blob([toFasta(name, activeDoc.raw)], { type: 'text/plain' });
+
+    const text = targets.map(d => toFasta(d.name || 'sequence', d.raw)).join('');
+    const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${name}.fasta`;
+    a.download = targets.length === 1 ? `${safeFileName(targets[0].name)}.fasta` : 'sequences.fasta';
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`Exported "${name}"`, 'info');
+    showToast(
+      targets.length === 1
+        ? `Exported "${targets[0].name || 'sequence'}"`
+        : `Exported ${targets.length} sequences`,
+      'info'
+    );
   }
 
   function handleReverseComplement() {
@@ -106,11 +132,16 @@ export default function Toolbar() {
           style={{ display: 'none' }}
         />
 
-        <button className="toolbar-btn" onClick={handleExport} disabled={!hasSequence} title="Export the active sequence as FASTA">
+        <button
+          className="toolbar-btn"
+          onClick={handleExport}
+          disabled={!hasExportable}
+          title="Export the selected sequences as FASTA — or all of them when none are selected"
+        >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M2 14h12M8 2v9M4 7l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          Export
+          Export{selectedCount > 0 ? ` (${selectedCount})` : ''}
         </button>
 
         <button className="toolbar-btn" onClick={save} disabled={!isDirty} title="Save the workspace (Ctrl+S)">
@@ -154,19 +185,18 @@ export default function Toolbar() {
               <option value="reference">Disagreements to reference</option>
             </select>
 
-            {viewSettings.highlightMode === 'reference' && (
-              <select
-                className="toolbar-select"
-                value={viewSettings.referenceDocId ?? ''}
-                onChange={e => setReferenceDocId(e.target.value)}
-                title="Which sequence the others are compared against"
-                aria-label="Reference sequence"
-              >
-                {workspace.documents.map(d => (
-                  <option key={d.id} value={d.id}>{d.name || 'Unnamed'}</option>
-                ))}
-              </select>
-            )}
+            <button
+              className={`toolbar-btn ${selectedIsReference ? 'toolbar-btn-active' : ''}`}
+              onClick={() => toggleReferenceDoc(singleSelectedId)}
+              disabled={singleSelectedId === null}
+              title={singleSelectedId === null
+                ? 'Select one sequence (Ctrl+click or double-click its name) to make it the reference'
+                : selectedIsReference
+                  ? 'Stop using this sequence as the reference'
+                  : 'Make this sequence the reference the others are compared against'}
+            >
+              {selectedIsReference ? 'Remove Reference' : 'Add as Reference'}
+            </button>
 
             <button
               className="toolbar-btn"

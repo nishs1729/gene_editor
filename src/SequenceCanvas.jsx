@@ -2,10 +2,15 @@
 // Manages canvas lifecycle, 2D scroll, resize, and wires selection/editing handlers.
 
 import { useRef, useEffect, useCallback, useState } from 'react';
-import useStore, { getActiveDoc } from './store.js';
+import useStore, { getActiveDoc, clampZoom } from './store.js';
 import { CanvasRenderer } from './canvasRenderer.js';
 import { createMouseHandlers, createSelectionKeyHandlers } from './selection.js';
 import { createEditingKeyHandler } from './editing.js';
+
+// Wheel deltas differ by an order of magnitude between mice and trackpads, so
+// zoom moves exponentially with the delta rather than in fixed steps.
+const ZOOM_SENSITIVITY = 0.002;
+const LINE_DELTA_PX = 16; // Firefox reports wheel deltas in lines, not pixels
 
 /** The slice of store state the renderer and interaction handlers read from. */
 function renderState() {
@@ -17,15 +22,30 @@ function renderState() {
 export default function SequenceCanvas() {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+  const spacerRef = useRef(null);
   const rendererRef = useRef(null);
   const scrollRef = useRef({ top: 0, left: 0 });
   const animFrameRef = useRef(null);
 
   const workspace = useStore(s => s.workspace);
   const theme = useStore(s => s.theme);
-  const { fullscreen } = workspace.viewSettings;
+  const setZoom = useStore(s => s.setZoom);
+  const { fullscreen, zoom } = workspace.viewSettings;
 
   const [contentSize, setContentSize] = useState({ width: 0, height: 0 });
+
+  // The spacer is written directly as well as through state: a zoom has to scroll
+  // the container within the new extent in the same tick, before React commits.
+  const applyContentSize = useCallback((size) => {
+    const spacer = spacerRef.current;
+    if (spacer) {
+      spacer.style.width = size.width ? `${size.width}px` : '100%';
+      spacer.style.height = `${size.height}px`;
+    }
+    setContentSize(prev =>
+      prev.width === size.width && prev.height === size.height ? prev : size
+    );
+  }, []);
 
   const scheduleRender = useCallback(() => {
     if (animFrameRef.current) return;
@@ -35,12 +55,9 @@ export default function SequenceCanvas() {
       if (!renderer) return;
       const state = renderState();
       renderer.render(state, scrollRef.current);
-      const size = renderer.getContentSize(state);
-      setContentSize(prev =>
-        prev.width === size.width && prev.height === size.height ? prev : size
-      );
+      applyContentSize(renderer.getContentSize(state));
     });
-  }, []);
+  }, [applyContentSize]);
 
   // Initialize renderer
   useEffect(() => {
@@ -84,6 +101,55 @@ export default function SequenceCanvas() {
     rendererRef.current?.setTheme(theme);
     scheduleRender();
   }, [theme, scheduleRender]);
+
+  // Keep the renderer's metrics in step with the stored zoom, whoever changed it.
+  useEffect(() => {
+    rendererRef.current?.setZoom(zoom);
+    scheduleRender();
+  }, [zoom, scheduleRender]);
+
+  // Ctrl/Cmd + wheel zooms about the pointer, as in Geneious. The listener is
+  // native rather than React's onWheel because that one is passive, and so cannot
+  // preventDefault the browser's own page zoom.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    function onWheel(e) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+
+      const renderer = rendererRef.current;
+      const state = renderState();
+      if (!renderer || state.documents.length === 0) return;
+
+      const current = useStore.getState().workspace.viewSettings.zoom;
+      const delta = e.deltaMode === 1 ? e.deltaY * LINE_DELTA_PX : e.deltaY;
+      const next = clampZoom(current * Math.exp(-delta * ZOOM_SENSITIVITY));
+      if (next === current) return;
+
+      const rect = renderer.canvas.getBoundingClientRect();
+      const anchor = renderer.getZoomAnchor(
+        e.clientX - rect.left, e.clientY - rect.top, scrollRef.current, state
+      );
+
+      renderer.setZoom(next);
+      // Resize the spacer first: the container will not scroll past an extent it
+      // does not have yet.
+      applyContentSize(renderer.getContentSize(state));
+
+      const scroll = renderer.getScrollForAnchor(anchor, state);
+      container.scrollTop = scroll.top;
+      container.scrollLeft = scroll.left;
+      scrollRef.current = { top: container.scrollTop, left: container.scrollLeft };
+
+      setZoom(next);
+      scheduleRender();
+    }
+
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, [applyContentSize, scheduleRender, setZoom]);
 
   // Cursor blink
   useEffect(() => {
@@ -137,6 +203,7 @@ export default function SequenceCanvas() {
       onScroll={handleScroll}
     >
       <div
+        ref={spacerRef}
         style={{
           width: contentSize.width || '100%',
           height: contentSize.height,

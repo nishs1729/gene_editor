@@ -6,6 +6,7 @@ import Toolbar from './Toolbar.jsx';
 import StatsPanel from './StatsPanel.jsx';
 import SequenceCanvas from './SequenceCanvas.jsx';
 import SelectionReadout from './SelectionReadout.jsx';
+import RenameDialog from './RenameDialog.jsx';
 import Toast from './Toast.jsx';
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
       {!fullscreen && <StatsPanel />}
       <SequenceCanvas />
       {!fullscreen && <SelectionReadout />}
+      <RenameDialog />
       <Toast />
     </div>
   );

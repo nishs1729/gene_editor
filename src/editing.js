@@ -55,6 +55,18 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       return;
     }
 
+    // --- Rename (F2) ---
+    // A name is not sequence data, so the edit lock doesn't apply. A single
+    // selected row is the target if there is one, since selecting a row then
+    // pressing F2 is the natural gesture; otherwise the focused row is renamed.
+    if (e.key === 'F2') {
+      e.preventDefault();
+      const selected = [...(state.selectedDocIds ?? [])];
+      const targetId = selected.length === 1 ? selected[0] : doc?.id;
+      if (targetId) store.startRename(targetId);
+      return;
+    }
+
     // Column-cursor mode: every keystroke applies to this column in every row at
     // once. Insert and delete are safe here precisely because they hit all rows
     // identically — the columns stay in register. The bindings mirror row mode:
