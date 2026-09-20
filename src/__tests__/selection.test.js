@@ -15,6 +15,7 @@ function makeStore() {
     setCursorPos: vi.fn(),
     setActiveDoc: vi.fn(),
     setColumnCursor: vi.fn(),
+    setColumnSelection: vi.fn(),
     setDragInsertIndex: vi.fn(),
     moveRange: vi.fn(),
     toggleDocSelection: vi.fn(),
@@ -22,6 +23,13 @@ function makeStore() {
     selectDocRange: vi.fn(),
     setNameGutterWidth: vi.fn(),
     showToast: vi.fn(),
+    startRename: vi.fn(),
+    selectOnlyDoc: vi.fn(),
+    toggleDocHidden: vi.fn(),
+    togglePinnedDoc: vi.fn(),
+    toggleGroupCollapsed: vi.fn(),
+    setRowDropIndex: vi.fn(),
+    reorderDoc: vi.fn(),
   };
 }
 
@@ -32,7 +40,7 @@ describe('selection keys — single document', () => {
     store = makeStore();
     doc = { ...createDocument('a', 'ACGTACGTACGT'), cursorPos: 5, selection: null };
     ({ handleSelectionKeys: handle } = createSelectionKeyHandlers(
-      () => ({ state: { documents: [doc], columnCursor: null }, doc, basesPerRow: 4 }),
+      () => ({ state: { documents: [doc], columnCursor: null, columnSelection: null }, doc, basesPerRow: 4 }),
       store
     ));
   });
@@ -179,6 +187,38 @@ describe('selection keys — column cursor', () => {
   });
 });
 
+describe('selection keys — column selection', () => {
+  let store, handle, state;
+
+  beforeEach(() => {
+    store = makeStore();
+    state = {
+      documents: [createDocument('a', 'ACGT'), createDocument('b', 'ACGTACGTAC')],
+      columnCursor: null,
+      columnSelection: { start: 2, end: 5 },
+    };
+    ({ handleSelectionKeys: handle } = createSelectionKeyHandlers(
+      () => ({ state, doc: state.documents[0], basesPerRow: 4 }),
+      store
+    ));
+  });
+
+  it('Escape clears column selection', () => {
+    expect(handle(key('Escape'))).toBe(true);
+    expect(store.setColumnSelection).toHaveBeenCalledWith(null);
+  });
+
+  it('ArrowLeft collapses selection to start as a column cursor', () => {
+    expect(handle(key('ArrowLeft'))).toBe(true);
+    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
+  });
+
+  it('ArrowRight collapses selection to end as a column cursor', () => {
+    expect(handle(key('ArrowRight'))).toBe(true);
+    expect(store.setColumnCursor).toHaveBeenCalledWith(5);
+  });
+});
+
 describe('mouse handling', () => {
   let store, renderer, hit, state, handlers, canvas;
 
@@ -186,7 +226,10 @@ describe('mouse handling', () => {
     return { clientX: 100, clientY: 100, detail: 1, shiftKey: false, preventDefault: vi.fn(), ...opts };
   }
 
+  const dragMove = () => window.addEventListener.mock.calls.find(c => c[0] === 'mousemove')?.[1];
+
   beforeEach(() => {
+    window.addEventListener.mockClear();
     store = makeStore();
     hit = null;
     canvas = {
@@ -198,12 +241,15 @@ describe('mouse handling', () => {
       canvas,
       hitTest: () => hit,
       indexToPixel: () => null,
+      cellWidth: 10,
+      _gutterWidth: 40,
     };
     state = {
       documents: [createDocument('a', 'ACGTACGT'), createDocument('b', 'ACGTACGT')],
       activeDocId: null,
       selectedDocIds: new Set(),
       columnCursor: null,
+      columnSelection: null,
     };
     state.activeDocId = state.documents[0].id;
     handlers = createMouseHandlers(
@@ -226,7 +272,21 @@ describe('mouse handling', () => {
     expect(store.setColumnCursor).toHaveBeenCalledWith(12);
   });
 
-  it('refuses a ruler click while the sequences are locked', () => {
+  it('dragging on ruler selects a column range across all sequences', () => {
+    hit = { kind: 'ruler', index: 3 };
+    handlers.onMouseDown(mouse({ clientX: 70 }));
+    expect(store.setColumnCursor).toHaveBeenCalledWith(3);
+
+    // Drag to col 5 (40 gutter + 5 * 10 = 90)
+    dragMove()({ clientX: 90, clientY: 100 });
+    expect(store.setColumnSelection).toHaveBeenCalledWith({ start: 3, end: 6 });
+
+    // Drag back to anchor collapses back to column cursor
+    dragMove()({ clientX: 70, clientY: 100 });
+    expect(store.setColumnCursor).toHaveBeenCalledWith(3);
+  });
+
+  it('allows a ruler click and drag even while the sequences are locked', () => {
     handlers = createMouseHandlers(
       renderer,
       () => ({ state, scroll: { top: 0, left: 0 }, editingEnabled: false }),
@@ -234,8 +294,8 @@ describe('mouse handling', () => {
     );
     hit = { kind: 'ruler', index: 12 };
     handlers.onMouseDown(mouse());
-    expect(store.setColumnCursor).not.toHaveBeenCalled();
-    expect(store.showToast).toHaveBeenCalledWith(expect.stringContaining('Allow Editing'), 'warning');
+    expect(store.setColumnCursor).toHaveBeenCalledWith(12);
+    expect(store.showToast).not.toHaveBeenCalled();
   });
 
   it('Ctrl+click selects a whole sequence', () => {
@@ -258,10 +318,43 @@ describe('mouse handling', () => {
     expect(store.setCursorPos).not.toHaveBeenCalled();
   });
 
-  it('double-clicking a name selects that sequence', () => {
+  it('double-clicking a name starts a rename, as in a file browser', () => {
     hit = { kind: 'name', docId: state.documents[1].id };
     handlers.onMouseDown(mouse({ detail: 2 }));
-    expect(store.toggleDocSelection).toHaveBeenCalledWith(state.documents[1].id);
+    expect(store.startRename).toHaveBeenCalledWith(state.documents[1].id);
+    expect(store.toggleDocSelection).not.toHaveBeenCalled();
+  });
+
+  it('clicking a gutter icon hides or pins that track without selecting it', () => {
+    hit = { kind: 'rowIcon', icon: 'hide', docId: state.documents[1].id };
+    handlers.onMouseDown(mouse());
+    expect(store.toggleDocHidden).toHaveBeenCalledWith(state.documents[1].id);
+
+    hit = { kind: 'rowIcon', icon: 'pin', docId: state.documents[1].id };
+    handlers.onMouseDown(mouse());
+    expect(store.togglePinnedDoc).toHaveBeenCalledWith(state.documents[1].id);
+    expect(store.setActiveDoc).not.toHaveBeenCalled();
+  });
+
+  it('dragging a name past the threshold reorders it', () => {
+    renderer.rowDropAt = () => ({ rowIndex: 2, docIndex: 2 });
+    hit = { kind: 'name', docId: state.documents[0].id };
+    handlers.onMouseDown(mouse({ clientY: 100 }));
+    expect(store.reorderDoc).not.toHaveBeenCalled();
+
+    dragMove()({ clientX: 100, clientY: 140 });
+    expect(store.setRowDropIndex).toHaveBeenCalledWith(2);
+
+    window.addEventListener.mock.calls.find(c => c[0] === 'mouseup')[1]();
+    expect(store.reorderDoc).toHaveBeenCalledWith(state.documents[0].id, 2);
+  });
+
+  it('a name click that does not move is a focus, not a reorder', () => {
+    hit = { kind: 'name', docId: state.documents[1].id };
+    handlers.onMouseDown(mouse());
+    window.addEventListener.mock.calls.find(c => c[0] === 'mouseup')[1]();
+    expect(store.reorderDoc).not.toHaveBeenCalled();
+    expect(store.setActiveDoc).toHaveBeenCalledWith(state.documents[1].id);
   });
 
   it('shift-clicking a name range-selects', () => {
@@ -277,13 +370,23 @@ describe('mouse handling', () => {
     expect(store.clearDocSelection).toHaveBeenCalled();
   });
 
-  it('a plain click on a name clears the selection and focuses that row', () => {
+  it('a plain click on a name selects that one row and focuses it', () => {
     state.selectedDocIds = new Set([state.documents[0].id]);
     hit = { kind: 'name', docId: state.documents[1].id };
     handlers.onMouseDown(mouse());
-    expect(store.clearDocSelection).toHaveBeenCalled();
+    expect(store.selectOnlyDoc).toHaveBeenCalledWith(state.documents[1].id);
     expect(store.setActiveDoc).toHaveBeenCalledWith(state.documents[1].id);
+    // Replacing the selection is one action, not a clear followed by an add.
+    expect(store.clearDocSelection).not.toHaveBeenCalled();
     expect(store.toggleDocSelection).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+click still adds to the selection rather than replacing it', () => {
+    state.selectedDocIds = new Set([state.documents[0].id]);
+    hit = { kind: 'name', docId: state.documents[1].id };
+    handlers.onMouseDown(mouse({ ctrlKey: true }));
+    expect(store.toggleDocSelection).toHaveBeenCalledWith(state.documents[1].id);
+    expect(store.selectOnlyDoc).not.toHaveBeenCalled();
   });
 
   it('does not churn the store when nothing is selected', () => {
@@ -330,7 +433,7 @@ describe('mouse handling', () => {
 
     hit = { kind: 'ruler', index: 3 };
     handlers.onMouseMove(mouse());
-    expect(canvas.style.cursor).toBe('col-resize');
+    expect(canvas.style.cursor).toBe('crosshair');
 
     hit = { kind: 'seq', docId: state.documents[0].id, index: 3 };
     handlers.onMouseMove(mouse());

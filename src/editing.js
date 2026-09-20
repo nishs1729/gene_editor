@@ -47,11 +47,31 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
     }
 
     const { state, doc, editingEnabled } = getContext();
+    const mod = e.ctrlKey || e.metaKey;
+
+    /** Gate for anything that mutates the sequence. */
+    function canEdit() {
+      if (editingEnabled) return true;
+      store.showToast('Click "Allow Editing" to edit this sequence', 'warning');
+      return false;
+    }
 
     // --- Save (allowed while locked, and independent of any row focus) ---
-    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+    if (mod && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       store.save();
+      return;
+    }
+
+    // --- Undo / Redo (available in row mode, column cursor, and column selection) ---
+    if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+      e.preventDefault();
+      if (canEdit()) store.undo();
+      return;
+    }
+    if (mod && (((e.key === 'z' || e.key === 'Z') && e.shiftKey) || e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      if (canEdit()) store.redo();
       return;
     }
 
@@ -67,6 +87,62 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       return;
     }
 
+    // Column-selection mode: a range of columns selected by ruler drag across all rows.
+    if (state.columnSelection) {
+      const { start, end } = state.columnSelection;
+      const colStart = Math.min(start, end);
+      const colEnd = Math.max(start, end);
+
+      // Copy (allowed while locked)
+      if (mod && (e.key === 'c' || e.key === 'C') && !e.shiftKey) {
+        e.preventDefault();
+        const text = state.documents.map(d => d.raw.slice(colStart, colEnd)).join('\n');
+        navigator.clipboard.writeText(text).catch(() => {});
+        return;
+      }
+
+      // Cut
+      if (mod && (e.key === 'x' || e.key === 'X') && !e.shiftKey) {
+        e.preventDefault();
+        if (!canEdit()) return;
+        const text = state.documents.map(d => d.raw.slice(colStart, colEnd)).join('\n');
+        navigator.clipboard.writeText(text).catch(() => {});
+        store.deleteColumnRange(colStart, colEnd);
+        store.setColumnCursor(colStart);
+        return;
+      }
+
+      // Backspace / Delete
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        if (!canEdit()) return;
+        if (e.altKey) {
+          store.substituteColumnRange(colStart, colEnd, GAP_CHAR);
+          store.setColumnCursor(colStart);
+        } else {
+          store.deleteColumnRange(colStart, colEnd);
+          const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+          store.setColumnCursor(Math.max(0, Math.min(colStart, maxLen - 1)));
+        }
+        return;
+      }
+
+      if (e.key.length !== 1 && !e.altKey) return;
+      if (e.ctrlKey || e.metaKey) return;
+      const char = charFromEvent(e);
+      if (!char) return;
+      e.preventDefault();
+      if (!canEdit()) return;
+      if (!isValidChar(char)) {
+        store.showToast(`"${char}" is not a valid IUPAC base`, 'warning');
+        return;
+      }
+
+      store.replaceColumnRange(colStart, colEnd, char);
+      store.setColumnCursor(colStart + 1);
+      return;
+    }
+
     // Column-cursor mode: every keystroke applies to this column in every row at
     // once. Insert and delete are safe here precisely because they hit all rows
     // identically — the columns stay in register. The bindings mirror row mode:
@@ -76,15 +152,9 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       const col = state.columnCursor;
       const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
 
-      function canEditColumn() {
-        if (editingEnabled) return true;
-        store.showToast('Click "Allow Editing" to edit this sequence', 'warning');
-        return false;
-      }
-
       if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault();
-        if (!canEditColumn()) return;
+        if (!canEdit()) return;
         const target = e.key === 'Backspace' ? col - 1 : col;
         if (target < 0 || target >= maxLen) return;
 
@@ -104,7 +174,7 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       const char = charFromEvent(e);
       if (!char) return;
       e.preventDefault();
-      if (!canEditColumn()) return;
+      if (!canEdit()) return;
       if (!isValidChar(char)) {
         store.showToast(`"${char}" is not a valid IUPAC base`, 'warning');
         return;
@@ -124,14 +194,6 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
     if (!doc) return;
     const { selection } = doc;
     const pos = doc.cursorPos ?? 0;
-    const mod = e.ctrlKey || e.metaKey;
-
-    /** Gate for anything that mutates the sequence. */
-    function canEdit() {
-      if (editingEnabled) return true;
-      store.showToast('Click "Allow Editing" to edit this sequence', 'warning');
-      return false;
-    }
 
     // --- Copy (allowed while locked) ---
     if (mod && (e.key === 'c' || e.key === 'C') && !e.shiftKey) {
@@ -139,18 +201,6 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
         e.preventDefault();
         navigator.clipboard.writeText(doc.raw.slice(selection.start, selection.end)).catch(() => {});
       }
-      return;
-    }
-
-    // --- Undo / Redo ---
-    if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-      e.preventDefault();
-      if (canEdit()) store.undo();
-      return;
-    }
-    if (mod && ((e.key === 'z' || e.key === 'Z') && e.shiftKey || e.key === 'y' || e.key === 'Y')) {
-      e.preventDefault();
-      if (canEdit()) store.redo();
       return;
     }
 

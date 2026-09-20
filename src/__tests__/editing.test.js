@@ -35,6 +35,9 @@ function makeStore() {
     substituteColumn: vi.fn(),
     insertColumn: vi.fn(),
     deleteColumn: vi.fn(),
+    deleteColumnRange: vi.fn(),
+    substituteColumnRange: vi.fn(),
+    replaceColumnRange: vi.fn(),
     showToast: vi.fn(),
   };
 }
@@ -43,12 +46,12 @@ let store;
 let context;
 let onKeyDown;
 
-/** Build a handler over one editable row, plus optional column-cursor state. */
-function setup({ raw = 'ACGTACGT', cursorPos = 3, selection = null, editingEnabled = true, columnCursor = null, documents = null } = {}) {
+/** Build a handler over one editable row, plus optional column-cursor or column-selection state. */
+function setup({ raw = 'ACGTACGT', cursorPos = 3, selection = null, editingEnabled = true, columnCursor = null, columnSelection = null, documents = null } = {}) {
   const doc = { ...createDocument('row', raw), cursorPos, selection };
   const allDocs = documents ?? [doc, { ...createDocument('other', raw) }];
   context = {
-    state: { documents: allDocs, columnCursor },
+    state: { documents: allDocs, columnCursor, columnSelection },
     doc,
     editingEnabled,
   };
@@ -323,6 +326,75 @@ describe('column-cursor editing', () => {
     expect(store.save).toHaveBeenCalled();
     onKeyDown(key('v', { ctrlKey: true }));
     expect(store.insertColumn).not.toHaveBeenCalled();
+  });
+
+  it('undo and redo work via keyboard shortcut when column cursor is active', () => {
+    onKeyDown(key('z', { ctrlKey: true }));
+    expect(store.undo).toHaveBeenCalled();
+    onKeyDown(key('z', { ctrlKey: true, shiftKey: true }));
+    expect(store.redo).toHaveBeenCalled();
+    onKeyDown(key('y', { ctrlKey: true }));
+    expect(store.redo).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('column-selection editing', () => {
+  // Columns 2 to 5 selected across all sequences
+  const colSel = opts => setup({ columnSelection: { start: 2, end: 5 }, ...opts });
+
+  beforeEach(() => colSel());
+
+  it('typing replaces the column selection across all rows', () => {
+    onKeyDown(key('a'));
+    expect(store.replaceColumnRange).toHaveBeenCalledWith(2, 5, 'A');
+    expect(store.setColumnCursor).toHaveBeenCalledWith(3);
+    expect(store.insertAt).not.toHaveBeenCalled();
+  });
+
+  it('backspace deletes the selected column range across all rows', () => {
+    onKeyDown(key('Backspace'));
+    expect(store.deleteColumnRange).toHaveBeenCalledWith(2, 5);
+    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
+  });
+
+  it('delete removes the selected column range across all rows', () => {
+    onKeyDown(key('Delete'));
+    expect(store.deleteColumnRange).toHaveBeenCalledWith(2, 5);
+    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
+  });
+
+  it('Alt+Backspace gaps the column range in place', () => {
+    onKeyDown(key('Backspace', { altKey: true }));
+    expect(store.substituteColumnRange).toHaveBeenCalledWith(2, 5, '-');
+    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
+  });
+
+  it('Alt+Delete gaps the column range in place', () => {
+    onKeyDown(key('Delete', { altKey: true }));
+    expect(store.substituteColumnRange).toHaveBeenCalledWith(2, 5, '-');
+    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
+  });
+
+  it('is blocked while editing is disabled', () => {
+    colSel({ editingEnabled: false });
+    onKeyDown(key('a'));
+    expect(store.deleteColumnRange).not.toHaveBeenCalled();
+    expect(store.showToast).toHaveBeenCalledWith(expect.stringContaining('Allow Editing'), 'warning');
+  });
+
+  it('warns on an invalid base', () => {
+    onKeyDown(key('z'));
+    expect(store.deleteColumnRange).not.toHaveBeenCalled();
+    expect(store.showToast).toHaveBeenCalledWith(expect.stringContaining('not a valid IUPAC base'), 'warning');
+  });
+
+  it('undo and redo work via keyboard shortcut when column selection is active', () => {
+    onKeyDown(key('z', { ctrlKey: true }));
+    expect(store.undo).toHaveBeenCalled();
+    onKeyDown(key('z', { ctrlKey: true, shiftKey: true }));
+    expect(store.redo).toHaveBeenCalled();
+    onKeyDown(key('y', { ctrlKey: true }));
+    expect(store.redo).toHaveBeenCalledTimes(2);
   });
 });
 

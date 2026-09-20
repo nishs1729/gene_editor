@@ -741,3 +741,173 @@ describe('resizable name column', () => {
     expect(r.hitTest(gutter, 8, scroll, state)).toEqual({ kind: 'gutterEdge' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Extreme zoom-out: a whole alignment compressed into the window.
+// Below a pixel per column the renderer aggregates bases per pixel instead of
+// drawing a cell each, which is what makes a multi-kilobase alignment fit.
+// ---------------------------------------------------------------------------
+
+/** Documents built from an explicit pattern, so a region's colour is known. */
+function patternState(rows, overrides = {}) {
+  const documents = rows.map((raw, i) => createDocument(`seq${i + 1}`, raw));
+  return {
+    documents,
+    activeDocId: documents[0].id,
+    selectedDocIds: new Set(),
+    columnCursor: null,
+    columnSelection: null,
+    dragInsertIndex: null,
+    viewSettings: {
+      lineWidth: 0,
+      showComplement: false,
+      showConsensus: false,
+      consensusThreshold: 0.5,
+      highlightMode: 'none',
+      referenceDocId: null,
+      fullscreen: false,
+    },
+    ...overrides,
+  };
+}
+
+describe('overview mode', () => {
+  it('switches in below a pixel per column, with hysteresis on the way back', () => {
+    // cellWidth is 10 * zoom with this stub's metrics.
+    expect(r.overviewMode).toBe(false);
+
+    r.setZoom(0.1); // 1px per column — at the threshold
+    expect(r.overviewMode).toBe(true);
+
+    // Still in overview between the two thresholds: this is the band that would
+    // otherwise flicker while the zoom slider is dragged.
+    r.setZoom(0.11);
+    expect(r.overviewMode).toBe(true);
+
+    r.setZoom(0.12); // 1.2px — out
+    expect(r.overviewMode).toBe(false);
+  });
+
+  it('lets a column be a fraction of a pixel', () => {
+    r.setZoom(0.02);
+    expect(r.cellWidth).toBeCloseTo(0.2);
+    // The old integer floor would have rounded this up to 2px per column and
+    // made a whole alignment twenty times too wide to fit.
+    expect(r.cellWidth).toBeLessThan(1);
+  });
+
+  it('draws by the pixel, not by the base', () => {
+    // 2,000 columns at 0.2px each: the per-base path would issue 2,000 fills per
+    // row for the ~400px the row occupies.
+    const state = patternState(['ACGT'.repeat(500), 'ACGT'.repeat(500)]);
+    r.setZoom(0.02);
+    r.drawn.reset();
+    r.render(state, { top: 0, left: 0 });
+
+    const rowY = r.getSeqAreaTop(state);
+    const rowFills = r.drawn.rects.filter(t => t.y === rowY && t.h === CELL_H - 1);
+    expect(rowFills.length).toBeGreaterThan(0);
+    expect(rowFills.length).toBeLessThan(500);
+  });
+
+  it('keeps gap columns legible as breaks in the row', () => {
+    // Bases on the left, a gap block on the right. Two rows, so this is the
+    // stacked alignment view rather than the wrapped single-sequence one.
+    const pattern = 'A'.repeat(1000) + '-'.repeat(1000);
+    const state = patternState([pattern, pattern]);
+    r.setZoom(0.05); // 0.5px per column
+    r.drawn.reset();
+    r.render(state, { top: 0, left: 0 });
+
+    const rowY = r.getSeqAreaTop(state);
+    const rowFills = r.drawn.rects.filter(t => t.y === rowY && t.h === CELL_H - 1);
+    const styles = new Set(rowFills.map(t => t.style));
+    expect(styles.has('#27AE60')).toBe(true);  // the palette's A
+    expect(styles.has(r.theme.gapBg)).toBe(true);
+  });
+
+  it('puts the gap run where the gaps actually are', () => {
+    const pattern = 'A'.repeat(1000) + '-'.repeat(1000);
+    const state = patternState([pattern, pattern]);
+    r.setZoom(0.05);
+    r.drawn.reset();
+    r.render(state, { top: 0, left: 0 });
+
+    const rowY = r.getSeqAreaTop(state);
+    const gutter = r.getGutterWidth(state);
+    const boundary = gutter + 1000 * r.cellWidth; // where the gaps begin
+    const gapFills = r.drawn.rects.filter(
+      t => t.y === rowY && t.h === CELL_H - 1 && t.style === r.theme.gapBg
+    );
+    expect(gapFills.length).toBeGreaterThan(0);
+    for (const fill of gapFills) expect(fill.x).toBeGreaterThanOrEqual(boundary - 2);
+  });
+
+  it('still draws cells and letters above the threshold', () => {
+    const state = stackedState(2, 40);
+    r.setZoom(1);
+    r.drawn.reset();
+    r.render(state, { top: 0, left: 0 });
+    expect(r.overviewMode).toBe(false);
+    expect(r.drawn.glyphs.some(g => g.text === 'A')).toBe(true);
+  });
+});
+
+describe('markers at extreme zoom-out', () => {
+  it('keeps a column selection wide enough to see', () => {
+    const state = patternState(['ACGT'.repeat(500), 'ACGT'.repeat(500)], {
+      columnSelection: { start: 100, end: 101 }, // one column, 0.2px wide
+    });
+    r.setZoom(0.02);
+    r.drawn.reset();
+    r.render(state, { top: 0, left: 0 });
+
+    const selection = r.drawn.rects.filter(t => t.style === r.theme.columnSelection);
+    expect(selection.length).toBeGreaterThan(0);
+    for (const rect of selection) expect(rect.w).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps a search hit wide enough to see', () => {
+    const state = patternState(['ACGT'.repeat(500), 'ACGT'.repeat(500)]);
+    state.find = {
+      matches: [{ docId: state.documents[0].id, start: 300, end: 301, strand: 1 }],
+      activeIndex: 0,
+    };
+    r.setZoom(0.02);
+    r.drawn.reset();
+    r.render(state, { top: 0, left: 0 });
+
+    const hits = r.drawn.rects.filter(t => t.style === r.theme.matchHighlightActive);
+    expect(hits.length).toBeGreaterThan(0);
+    for (const hit of hits) expect(hit.w).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('fit to width', () => {
+  it('reaches the zoom that puts a whole alignment in the window', () => {
+    // The reference screenshot: 5,811 columns in a window this size.
+    const state = patternState([
+      'ACGT'.repeat(1453).slice(0, 5811),
+      'ACGT'.repeat(1453).slice(0, 5811),
+    ]);
+    const fit = r.getFitZoom(state);
+
+    // Around 1% — the figure Geneious shows for the same alignment.
+    expect(fit).toBeGreaterThan(0.005);
+    expect(fit).toBeLessThan(0.03);
+
+    r.setZoom(fit);
+    expect(r.overviewMode).toBe(true);
+  });
+
+  it('leaves nothing to scroll horizontally once fitted', () => {
+    const state = patternState([
+      'ACGT'.repeat(1453).slice(0, 5811),
+      'ACGT'.repeat(1453).slice(0, 5811),
+    ]);
+    r.setZoom(r.getFitZoom(state));
+    const { width } = r.getContentSize(state);
+    // Within the right-hand padding the fit calculation reserves.
+    expect(width).toBeLessThanOrEqual(r.width + 1);
+  });
+});

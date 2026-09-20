@@ -2,7 +2,12 @@
 // Mouse handling is a small state machine because one mousedown can start four
 // different gestures depending on where it lands relative to the current selection.
 
+import { getCanvasApi } from './canvasBridge.js';
+
 const EDGE_HANDLE_PX = 5;
+// How far a name has to be dragged before it counts as reordering rather than
+// as a click that focused the row.
+const ROW_DRAG_THRESHOLD_PX = 4;
 
 function docById(state, id) {
   return state.documents.find(d => d.id === id) ?? null;
@@ -17,11 +22,16 @@ function docById(state, id) {
  * @param {object} store - actions: setSelection, setCursorPos, setActiveDoc, moveRange, setDragInsertIndex, showToast
  * @returns {object} { onMouseDown, onMouseMove, destroy }
  */
-export function createMouseHandlers(renderer, getContext, store) {
-  let gesture = null; // 'select' | 'resize' | 'move' | 'gutter' | null
+export function createMouseHandlers(renderer, getContext, store, requestRender = () => {}) {
+  // 'select' | 'resize' | 'move' | 'gutter' | 'rulerDrag' | 'rowPending' | 'rowDrag' | 'minimap'
+  let gesture = null;
   let anchor = null;      // fixed end for 'select' / 'resize'
+  let rulerAnchor = null; // fixed column end for 'rulerDrag'
   let moveSelection = null; // { start, end } being dragged
   let dropIndex = null;
+  let rowDragId = null;   // the name being dragged to a new position
+  let rowDragStartY = 0;
+  let rowDropDocIndex = null;
 
   function toCanvasXY(e) {
     const rect = renderer.canvas.getBoundingClientRect();
@@ -43,7 +53,7 @@ export function createMouseHandlers(renderer, getContext, store) {
 
   function onMouseDown(e) {
     const { x, y } = toCanvasXY(e);
-    const { state, scroll, editingEnabled } = getContext();
+    const { state, scroll } = getContext();
     const hit = renderer.hitTest(x, y, scroll, state);
     if (!hit) return;
     // preventDefault stops the page-level text selection drag, but it also
@@ -59,34 +69,82 @@ export function createMouseHandlers(renderer, getContext, store) {
     }
 
     if (hit.kind === 'ruler') {
-      // Ruler click places a column cursor spanning every row — editing-only,
-      // since it has no meaning while the sequences are locked.
-      if (editingEnabled) store.setColumnCursor(hit.index);
-      else store.showToast('Click "Allow Editing" to place a column cursor', 'warning');
+      // Ruler click sets column cursor; dragging along ruler selects a column range across all sequences.
+      // Allowed even when editing is off — cursor placement & selection are navigation/inspection,
+      // only the edits themselves require editingEnabled.
+      rulerAnchor = hit.index;
+      gesture = 'rulerDrag';
+      store.setColumnCursor(hit.index);
+      startTracking();
       return;
     }
 
-    // Whole-sequence selection is a deliberate gesture: Ctrl/Cmd+click toggles a
-    // sequence, Shift+click extends the range, double-click adds one. A plain
-    // click is the way out — it clears the selection entirely.
+    // The overview strip navigates: a click centres the view, a drag pans it.
+    if (hit.kind === 'minimap') {
+      gesture = 'minimap';
+      getCanvasApi()?.centerOnColumn(hit.index, { flash: false });
+      startTracking();
+      return;
+    }
+
+    if (hit.kind === 'group') {
+      store.toggleGroupCollapsed(hit.groupId);
+      return;
+    }
+
+    if (hit.kind === 'rowIcon') {
+      if (hit.icon === 'hide') store.toggleDocHidden(hit.docId);
+      else store.togglePinnedDoc(hit.docId);
+      return;
+    }
+
+    // Clicking a feature opens it for editing; the bases under it are not the target.
+    if (hit.kind === 'annotation') {
+      store.setActiveDoc(hit.docId);
+      store.openAnnotation({
+        docId: hit.docId,
+        featureId: hit.feature.id,
+        start: hit.feature.start,
+        end: hit.feature.end,
+      });
+      return;
+    }
+
+    // Ctrl/Cmd+click adds a sequence to the selection without disturbing the rest,
+    // Shift+click extends the range from the last one clicked.
     const mod = e.ctrlKey || e.metaKey;
     if (mod || (e.shiftKey && hit.kind === 'name')) {
       if (e.shiftKey) store.selectDocRange(hit.docId);
       else store.toggleDocSelection(hit.docId);
       return;
     }
+    // Double-clicking a name renames it, as it would in a file browser.
     if (hit.kind === 'name' && e.detail === 2) {
-      store.toggleDocSelection(hit.docId);
+      store.startRename(hit.docId);
       return;
     }
-    if ((state.selectedDocIds?.size ?? 0) > 0) store.clearDocSelection();
 
     const wasActive = hit.docId === state.activeDocId;
     if (!wasActive) store.setActiveDoc(hit.docId);
+    // Clicking a sequence cell clears any column cursor/selection.
     if (state.columnCursor !== null) store.setColumnCursor(null);
+    if (state.columnSelection !== null) store.setColumnSelection(null);
 
-    // Name-gutter click with nothing selected: focus the row, nothing else.
-    if (hit.kind === 'name') return;
+    // A plain click on a name selects that one sequence — "this one", where
+    // Ctrl+click means "this one as well". If the press then moves, it is a
+    // reorder drag instead, decided in onDragMove.
+    if (hit.kind === 'name') {
+      store.selectOnlyDoc(hit.docId);
+      rowDragId = hit.docId;
+      rowDragStartY = y;
+      rowDropDocIndex = null;
+      gesture = 'rowPending';
+      startTracking();
+      return;
+    }
+
+    // Clicking into the bases is the way out of a row selection.
+    if ((state.selectedDocIds?.size ?? 0) > 0) store.clearDocSelection();
 
     const doc = docById(state, hit.docId);
     if (!doc) return;
@@ -143,6 +201,14 @@ export function createMouseHandlers(renderer, getContext, store) {
     const hit = renderer.hitTest(x, y, scroll, state);
     const canvas = renderer.canvas;
 
+    // The gutter controls only appear on the row under the pointer, so a change
+    // of row has to repaint even though nothing in the store moved.
+    const hoverDocId = hit && (hit.kind === 'name' || hit.kind === 'rowIcon') ? hit.docId : null;
+    if (renderer.hoverDocId !== hoverDocId) {
+      renderer.hoverDocId = hoverDocId;
+      requestRender();
+    }
+
     if (!hit) {
       canvas.style.cursor = 'default';
       return;
@@ -151,12 +217,16 @@ export function createMouseHandlers(renderer, getContext, store) {
       canvas.style.cursor = 'col-resize';
       return;
     }
-    if (hit.kind === 'name') {
+    if (hit.kind === 'name' || hit.kind === 'rowIcon' || hit.kind === 'group') {
       canvas.style.cursor = 'pointer';
       return;
     }
+    if (hit.kind === 'minimap') {
+      canvas.style.cursor = 'ew-resize';
+      return;
+    }
     if (hit.kind === 'ruler') {
-      canvas.style.cursor = 'col-resize';
+      canvas.style.cursor = 'crosshair';
       return;
     }
 
@@ -177,10 +247,48 @@ export function createMouseHandlers(renderer, getContext, store) {
   function onDragMove(e) {
     const { x, y } = toCanvasXY(e);
 
-    // The divider follows the pointer directly — the gutter starts at x = 0, so
-    // the pointer's x is the width.
+    // The divider follows the pointer directly.
     if (gesture === 'gutter') {
       store.setNameGutterWidth(x);
+      return;
+    }
+
+    if (gesture === 'minimap') {
+      const { state } = getContext();
+      getCanvasApi()?.centerOnColumn(renderer.minimapColumnAt(x, state), { flash: false });
+      return;
+    }
+
+    if (gesture === 'rowPending') {
+      if (Math.abs(y - rowDragStartY) < ROW_DRAG_THRESHOLD_PX) return;
+      gesture = 'rowDrag';
+      renderer.canvas.style.cursor = 'grabbing';
+    }
+
+    if (gesture === 'rowDrag') {
+      const { state, scroll } = getContext();
+      const drop = renderer.rowDropAt(y, scroll, state);
+      if (!drop) return;
+      rowDropDocIndex = drop.docIndex;
+      store.setRowDropIndex(drop.rowIndex);
+      return;
+    }
+
+    // Ruler drag: update the column selection as the pointer moves horizontally.
+    if (gesture === 'rulerDrag') {
+      const { state, scroll } = getContext();
+      const gutter = renderer.getGutterWidth ? renderer.getGutterWidth(state) : renderer._gutterWidth;
+      const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+      const col = Math.max(0, Math.min(maxLen - 1,
+        Math.round((x - gutter + scroll.left) / renderer.cellWidth)
+      ));
+      if (col === rulerAnchor) {
+        store.setColumnCursor(rulerAnchor);
+      } else {
+        const start = Math.min(rulerAnchor, col);
+        const end = Math.max(rulerAnchor, col) + 1; // end is exclusive like per-doc selection
+        store.setColumnSelection({ start, end });
+      }
       return;
     }
 
@@ -198,6 +306,27 @@ export function createMouseHandlers(renderer, getContext, store) {
   }
 
   function onDragEnd() {
+    if (gesture === 'rulerDrag' || gesture === 'minimap') {
+      rulerAnchor = null;
+      gesture = null;
+      renderer.canvas.style.cursor = 'default';
+      stopTracking();
+      return;
+    }
+
+    if (gesture === 'rowPending' || gesture === 'rowDrag') {
+      if (gesture === 'rowDrag' && rowDropDocIndex !== null) {
+        store.reorderDoc(rowDragId, rowDropDocIndex);
+      }
+      store.setRowDropIndex(null);
+      rowDragId = null;
+      rowDropDocIndex = null;
+      gesture = null;
+      renderer.canvas.style.cursor = 'pointer';
+      stopTracking();
+      return;
+    }
+
     if (gesture === 'move' && dropIndex !== null) {
       const { editingEnabled } = getContext();
       if (editingEnabled) {
@@ -244,6 +373,22 @@ export function createSelectionKeyHandlers(getContext, store) {
   function handleSelectionKeys(e) {
     const { state, doc, basesPerRow } = getContext();
     if (!doc) return false;
+
+    // A column-range selection from a ruler drag: Escape clears it; Arrow keys collapse to cursor.
+    if (state.columnSelection) {
+      if (e.key === 'Escape') {
+        store.setColumnSelection(null);
+        return true;
+      }
+      if (e.key === 'ArrowLeft') {
+        store.setColumnCursor(Math.min(state.columnSelection.start, state.columnSelection.end));
+        return true;
+      }
+      if (e.key === 'ArrowRight') {
+        store.setColumnCursor(Math.max(state.columnSelection.start, state.columnSelection.end));
+        return true;
+      }
+    }
 
     // A column cursor spans every row; it moves independently of any one row's
     // cursor/selection and only understands Left/Right and Escape.

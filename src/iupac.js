@@ -21,6 +21,10 @@ export const IUPAC_MAP = {
   H: { bases: ['A', 'C', 'T'], color: '#A06070' },
   V: { bases: ['A', 'C', 'G'], color: '#508080' },
   N: { bases: ['A', 'T', 'G', 'C'], color: '#575757' },
+  // Uracil, so RNA transcripts survive a round-trip through the editor. It is not
+  // one of the 15 DNA codes and has no complement entry: complementing RNA is not
+  // a meaningful operation on a single strand read as sequence data.
+  U: { bases: ['U'], color: '#E8735A' },
   // Alignment gap. No color: gap cells are drawn from the active theme, not the base palette.
   '-': { bases: [], isGap: true },
 };
@@ -82,6 +86,7 @@ export const TEXT_COLOR_MAP = {
   H: '#FFFFFF',
   V: '#FFFFFF',
   N: '#FFFFFF',
+  U: '#FFFFFF',
 };
 
 /**

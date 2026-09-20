@@ -22,6 +22,7 @@ export function createDocument(name = '', raw = '') {
     selection: null, // { start: number, end: number } | null
     cursorPos: 0,
     dirty: false,
+    features: [], // Array<Feature> — see annotations.js
   };
 }
 
@@ -164,6 +165,19 @@ export function moveRange(doc, start, end, dest) {
 }
 
 /**
+ * Replace the whole sequence with `newRaw` as one undoable command.
+ * Bulk operations — cleanup, transforms, replace-all — rewrite a row in ways
+ * that are not one contiguous span, and recording them as several commands would
+ * take several undos to reverse one action.
+ * @param {object} doc - SequenceDocument
+ * @param {string} newRaw
+ * @returns {object} new SequenceDocument
+ */
+export function setRaw(doc, newRaw) {
+  return replaceRange(doc, 0, doc.raw.length, newRaw);
+}
+
+/**
  * Compute the consensus call at one alignment column across several documents.
  * Majority non-gap character if it meets `threshold` of the non-gap calls at
  * that column, else 'N'. An all-gap column returns a gap.
@@ -303,6 +317,47 @@ export function redo(doc) {
  */
 export function reverseComplement(raw) {
   return [...raw].reverse().map(c => complement(c) || c).join('');
+}
+
+/** Reverse the sequence, 3'→5'. Gaps travel with it, so columns are not preserved. */
+export function reverseSeq(raw) {
+  return [...raw].reverse().join('');
+}
+
+/** Complement each base in place, leaving the order — and so the columns — alone. */
+export function complementSeq(raw) {
+  return [...raw].map(c => complement(c) || c).join('');
+}
+
+/** DNA → RNA. */
+export function transcribe(raw) {
+  return raw.replace(/T/g, 'U');
+}
+
+/** RNA → DNA. */
+export function reverseTranscribe(raw) {
+  return raw.replace(/U/g, 'T');
+}
+
+export const TRANSFORMS = {
+  reverse: { label: 'Reverse', apply: reverseSeq },
+  complement: { label: 'Complement', apply: complementSeq },
+  reverseComplement: { label: 'Reverse complement', apply: reverseComplement },
+  transcribe: { label: 'Transcribe to RNA', apply: transcribe },
+  reverseTranscribe: { label: 'Reverse transcribe to DNA', apply: reverseTranscribe },
+};
+
+/**
+ * Apply a transform to part of a sequence, splicing the result back in place.
+ * @param {string} raw
+ * @param {number} start - inclusive
+ * @param {number} end - exclusive
+ * @param {function(string): string} apply
+ * @returns {string}
+ */
+export function transformSpan(raw, start, end, apply) {
+  if (start < 0 || end > raw.length || start >= end) return raw;
+  return raw.slice(0, start) + apply(raw.slice(start, end)) + raw.slice(end);
 }
 
 /**

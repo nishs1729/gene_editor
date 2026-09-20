@@ -6,6 +6,8 @@ import useStore, { getActiveDoc, clampZoom } from './store.js';
 import { CanvasRenderer } from './canvasRenderer.js';
 import { createMouseHandlers, createSelectionKeyHandlers } from './selection.js';
 import { createEditingKeyHandler } from './editing.js';
+import { registerCanvasApi } from './canvasBridge.js';
+import { describeFeature } from './annotations.js';
 
 // Wheel deltas differ by an order of magnitude between mice and trackpads, so
 // zoom moves exponentially with the delta rather than in fixed steps.
@@ -14,9 +16,14 @@ const LINE_DELTA_PX = 16; // Firefox reports wheel deltas in lines, not pixels
 
 /** The slice of store state the renderer and interaction handlers read from. */
 function renderState() {
-  const { documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor } =
-    useStore.getState().workspace;
-  return { documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor };
+  const state = useStore.getState();
+  const { documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor, columnSelection } =
+    state.workspace;
+  return {
+    documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds,
+    columnCursor, columnSelection,
+    find: state.find,
+  };
 }
 
 export default function SequenceCanvas() {
@@ -29,10 +36,12 @@ export default function SequenceCanvas() {
 
   const workspace = useStore(s => s.workspace);
   const theme = useStore(s => s.theme);
+  const find = useStore(s => s.find);
   const setZoom = useStore(s => s.setZoom);
-  const { fullscreen, zoom } = workspace.viewSettings;
+  const { fullscreen, zoom, colorPalette } = workspace.viewSettings;
 
   const [contentSize, setContentSize] = useState({ width: 0, height: 0 });
+  const [tooltip, setTooltip] = useState(null); // { x, y, feature } for a hovered annotation
 
   // The spacer is written directly as well as through state: a zoom has to scroll
   // the container within the new extent in the same tick, before React commits.
@@ -56,6 +65,13 @@ export default function SequenceCanvas() {
       const state = renderState();
       renderer.render(state, scrollRef.current);
       applyContentSize(renderer.getContentSize(state));
+
+      // How far out the view can usefully go depends on the window and on the
+      // sequences, both of which change under us. This is the one place that
+      // sees every such change, and the store ignores a value that has not moved.
+      if (state.documents.length > 0) {
+        useStore.getState().setMinZoom(renderer.getFitZoom(state));
+      }
     });
   }, [applyContentSize]);
 
@@ -107,6 +123,72 @@ export default function SequenceCanvas() {
     rendererRef.current?.setZoom(zoom);
     scheduleRender();
   }, [zoom, scheduleRender]);
+
+  // Redraw on palette change
+  useEffect(() => {
+    rendererRef.current?.setPalette(colorPalette);
+    scheduleRender();
+  }, [colorPalette, scheduleRender]);
+
+  // Redraw when the search hits change, so the highlights follow them
+  useEffect(() => {
+    scheduleRender();
+  }, [find, scheduleRender]);
+
+  // Imperative handles for the toolbar and dialogs, which have no ref to any of this.
+  useEffect(() => {
+    return registerCanvasApi({
+      /** Zoom so the longest sequence fills the view. */
+      fitToWidth: () => {
+        const renderer = rendererRef.current;
+        if (!renderer) return;
+        const state = renderState();
+        if (state.documents.length === 0) return;
+        setZoom(renderer.getFitZoom(state));
+      },
+
+      /** Scroll `col` to the middle of the sequence area, and flash it. */
+      centerOnColumn: (col, options = {}) => {
+        const renderer = rendererRef.current;
+        const container = containerRef.current;
+        if (!renderer || !container) return;
+        const state = renderState();
+        const gutter = renderer.isStacked(state) ? renderer.getGutterWidth(state) : 0;
+        const viewportWidth = renderer.width - gutter;
+        container.scrollLeft = Math.max(0, col * renderer.cellWidth - viewportWidth / 2);
+        scrollRef.current = { top: container.scrollTop, left: container.scrollLeft };
+        if (options.flash !== false) renderer.flashColumn(col);
+        scheduleRender();
+        // The flash fades on its own, so the frames that show it fading have to
+        // be asked for — nothing else changes in that window.
+        setTimeout(scheduleRender, 200);
+        setTimeout(scheduleRender, 500);
+        setTimeout(scheduleRender, 900);
+      },
+
+      /** Scroll a row into view vertically (used when a search match is off-screen). */
+      revealRow: (docId) => {
+        const renderer = rendererRef.current;
+        const container = containerRef.current;
+        if (!renderer || !container) return;
+        const state = renderState();
+        const row = state.documents.findIndex(d => d.id === docId);
+        if (row === -1 || !renderer.isStacked(state)) return;
+        const rowHeight = renderer.getRowHeight(state.viewSettings.showComplement);
+        const seqAreaHeight = renderer.height - renderer.getSeqAreaTop(state);
+        const top = row * rowHeight;
+        if (top < container.scrollTop || top + rowHeight > container.scrollTop + seqAreaHeight) {
+          container.scrollTop = Math.max(0, top - seqAreaHeight / 2 + rowHeight);
+          scrollRef.current = { top: container.scrollTop, left: container.scrollLeft };
+          scheduleRender();
+        }
+      },
+
+      /** The renderer itself, for exporters that re-draw the current view. */
+      getRenderer: () => rendererRef.current,
+      getScroll: () => scrollRef.current,
+    });
+  }, [scheduleRender, setZoom]);
 
   // Ctrl/Cmd + wheel zooms about the pointer, as in Geneious. The listener is
   // native rather than React's onWheel because that one is passive, and so cannot
@@ -168,6 +250,21 @@ export default function SequenceCanvas() {
     scheduleRender();
   }, [scheduleRender]);
 
+  /** Feature details follow the pointer; the canvas itself cannot hold a tooltip. */
+  const handleHover = useCallback((e) => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const rect = renderer.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const hit = renderer.hitTest(x, y, scrollRef.current, renderState());
+    setTooltip(prev => {
+      if (hit?.kind !== 'annotation') return prev === null ? prev : null;
+      if (prev?.feature?.id === hit.feature.id) return prev;
+      return { x, y, feature: hit.feature };
+    });
+  }, []);
+
   // Mouse + keyboard handlers
   const mouseHandlersRef = useRef(null);
   const keyHandlerRef = useRef(null);
@@ -187,7 +284,7 @@ export default function SequenceCanvas() {
       };
     };
 
-    const mouse = createMouseHandlers(renderer, getContext, actions);
+    const mouse = createMouseHandlers(renderer, getContext, actions, scheduleRender);
     mouseHandlersRef.current = mouse;
 
     const { handleSelectionKeys } = createSelectionKeyHandlers(getContext, actions);
@@ -216,10 +313,26 @@ export default function SequenceCanvas() {
           tabIndex={0}
           className="sequence-canvas"
           onMouseDown={(e) => mouseHandlersRef.current?.onMouseDown(e)}
-          onMouseMove={(e) => mouseHandlersRef.current?.onMouseMove(e)}
+          onMouseMove={(e) => {
+            mouseHandlersRef.current?.onMouseMove(e);
+            handleHover(e);
+          }}
+          onMouseLeave={() => setTooltip(null)}
           onKeyDown={(e) => keyHandlerRef.current?.(e)}
           style={{ position: 'sticky', top: 0, left: 0 }}
         />
+
+        {tooltip && (
+          <div
+            className="annotation-tooltip"
+            style={{ left: tooltip.x + 14, top: tooltip.y + 16 }}
+          >
+            <div>{describeFeature(tooltip.feature)}</div>
+            {tooltip.feature.notes && (
+              <div className="tooltip-notes">{tooltip.feature.notes}</div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

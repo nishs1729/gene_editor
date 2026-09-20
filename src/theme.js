@@ -23,6 +23,18 @@ export const THEMES = {
     agreementText: '#5F6B80', // greyed-out base that matches the consensus/reference
     rowNumber: '#5A6478',
     columnCursor: '#FF9F45',
+    columnSelection: 'rgba(99, 179, 237, 0.22)', // cyan tint, distinct from cursor and selection
+    columnBand: 'rgba(255, 255, 255, 0.05)', // alternating 10-column banding
+    matchHighlight: 'rgba(255, 214, 102, 0.30)', // search hit
+    matchHighlightActive: 'rgba(255, 184, 46, 0.55)', // the hit the viewport is on
+    conservationHigh: '#48BB78',
+    conservationMid: '#ECC94B',
+    conservationLow: '#F56565',
+    minimapBg: '#0F1524',
+    minimapTrack: '#4A7FC1',
+    minimapViewport: 'rgba(66, 135, 245, 0.28)',
+    minimapViewportBorder: '#4285F5',
+    annotationText: '#E2E8F0',
     selectedRowBg: 'rgba(66, 135, 245, 0.30)',
     selectedRowBar: '#4285F5',
     selectedRowOverlay: 'rgba(66, 135, 245, 0.28)',
@@ -50,6 +62,18 @@ export const THEMES = {
     agreementText: '#AEB6C2',
     rowNumber: '#A3ABB8',
     columnCursor: '#E8590C',
+    columnSelection: 'rgba(59, 153, 252, 0.18)', // cyan tint, distinct from cursor and selection
+    columnBand: 'rgba(15, 23, 42, 0.05)', // alternating 10-column banding
+    matchHighlight: 'rgba(250, 204, 21, 0.35)', // search hit
+    matchHighlightActive: 'rgba(234, 164, 8, 0.60)', // the hit the viewport is on
+    conservationHigh: '#2F9E5E',
+    conservationMid: '#D8A213',
+    conservationLow: '#D64545',
+    minimapBg: '#F0F2F5',
+    minimapTrack: '#7A93B8',
+    minimapViewport: 'rgba(45, 127, 249, 0.22)',
+    minimapViewportBorder: '#2D7FF9',
+    annotationText: '#1F2933',
     selectedRowBg: 'rgba(45, 127, 249, 0.22)',
     selectedRowBar: '#2D7FF9',
     selectedRowOverlay: 'rgba(45, 127, 249, 0.22)',
