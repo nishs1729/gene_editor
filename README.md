@@ -1,16 +1,45 @@
-# React + Vite
+# DNA Sequence Editor
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A fast, browser-based viewer and editor for DNA/RNA sequences, styled after Geneious. Load a FASTA file, view single sequences or full alignments, and edit them directly — no install, no account, nothing leaves your browser.
 
-Currently, two official plugins are available:
+**[Open the app →](https://nishs1729.github.io/gene_editor/)**
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What it does
 
-## React Compiler
+- **View any FASTA file** — a single sequence wraps across the screen; multiple sequences show as a stacked alignment, one row each, with a shared ruler and name column.
+- **Colour-coded bases** — every base and IUPAC ambiguity code (A, T, G, C, and the rest) gets its own colour, so patterns and mismatches are easy to spot at a glance.
+- **Edit sequences** — sequences open read-only; click **Allow Editing** to type, paste, cut, copy, delete, and undo/redo changes.
+- **Consensus and comparison** — with multiple sequences loaded, see a live consensus row (with an adjustable agreement threshold), and highlight only the bases that *disagree* with the consensus or with a chosen reference sequence.
+- **Reference sequences** — pick any one sequence as the reference for comparison; it's marked in the name column so you always know which one it is.
+- **Zoom and resize** — Ctrl + scroll to zoom the sequence view in and out; drag the edge of the name column to make room for longer names.
+- **Rename, select, delete** — press F2 (or double-click a name) to rename a sequence; select one or more rows to delete or export just those.
+- **Export** — export the selected sequences, or all of them, back out as a FASTA file.
+- **Reverse complement and complement strand** — flip a sequence, or show its complementary strand right underneath it.
+- **Stats at a glance** — length, %GC, per-base counts, gaps, and ambiguous bases for whatever sequence is active.
+- **Light and dark themes**, and a distraction-free fullscreen mode.
+- **Autosaves nothing you don't ask for** — your work stays in the browser; click **Save** to persist it locally, and **Export** whenever you want a copy on disk.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Basic usage
 
-## Expanding the Oxlint configuration
+1. Click **Load FASTA** and pick a `.fasta`, `.fa`, `.fna`, `.fas`, `.aln`, or `.txt` file. One record opens as a single sequence; several open as an alignment.
+2. Click a sequence to select it, click and drag to select a range of bases, or click a name to select a whole row.
+3. Click **Allow Editing** before making any changes — this is a safety catch so you don't edit a sequence by accident.
+4. Use the toolbar to toggle the complement strand, the consensus row, disagreement highlighting, or a reference sequence.
+5. When you're done, **Export** the sequences you need, or **Save** to keep your changes in this browser for next time.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| Click / Shift+click / drag | Move cursor, extend or make a selection |
+| Double-click / Triple-click a sequence | Select a word / the whole sequence |
+| Ctrl/Cmd+click a name, or double-click it | Select that whole sequence (for delete/export/reference) |
+| F2 | Rename the selected (or focused) sequence |
+| Ctrl/Cmd + scroll | Zoom the sequence view in and out |
+| Ctrl/Cmd+C / X / V | Copy / cut / paste |
+| Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z | Undo / redo |
+| Ctrl/Cmd+S | Save |
+| Alt + a base letter | Substitute in place, without shifting the rest of the sequence |
+| Alt + Backspace/Delete | Delete in place, leaving a gap instead of closing it up |
+| Space or **-** | Insert a gap |
+| Esc | Exit fullscreen, or cancel a rename |
