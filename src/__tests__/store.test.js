@@ -59,6 +59,13 @@ describe('loadWorkspace', () => {
     expect(getActiveDoc(get()).raw).toBe('ACGTACGT');
   });
 
+  it('remembers the file the records came from, and forgets the last one', () => {
+    get().loadWorkspace(RECORDS, 'aligned.fasta');
+    expect(ws().fileName).toBe('aligned.fasta');
+    get().loadWorkspace(RECORDS);
+    expect(ws().fileName).toBe('');
+  });
+
   it('locks editing, as newly opened documents do in Geneious', () => {
     get().toggleEditingEnabled();
     expect(ws().editingEnabled).toBe(true);

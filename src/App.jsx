@@ -103,7 +103,7 @@ export default function App() {
         store.showToast('No valid sequences found in file', 'error');
         return;
       }
-      store.loadWorkspace(records);
+      store.loadWorkspace(records, file.name);
       store.showToast(
         records.length === 1
           ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`

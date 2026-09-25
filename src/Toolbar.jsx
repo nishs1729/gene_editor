@@ -97,7 +97,7 @@ export default function Toolbar() {
         showToast('No valid sequences found in file', 'error');
         return;
       }
-      loadWorkspace(records);
+      loadWorkspace(records, file.name);
       showToast(
         records.length === 1
           ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`

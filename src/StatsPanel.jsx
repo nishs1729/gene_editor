@@ -23,6 +23,7 @@ const Divider = () => <span className="stat-divider">|</span>;
 export default function StatsPanel() {
   const stats = useStore(s => s.stats);
   const activeName = useStore(s => getActiveDoc(s)?.name ?? '');
+  const fileName = useStore(s => s.workspace.fileName);
   const documents = useStore(s => s.workspace.documents);
   const selectedDocIds = useStore(s => s.workspace.selectedDocIds);
 
@@ -54,10 +55,15 @@ export default function StatsPanel() {
 
   return (
     <div className="stats-panel">
-      {documents.length > 1 && (
+      {/* The file, not the sequence: which of several open files you are looking
+          at is the thing that is easy to lose track of. The active sequence's
+          name is already on its own row in the gutter. */}
+      {(fileName || documents.length > 1) && (
         <>
           <span className="stat-item">
-            <span className="stat-value stat-active-name">{activeName || 'Unnamed'}</span>
+            <span className="stat-value stat-active-name" title={fileName ? 'Loaded file' : 'Active sequence'}>
+              {fileName || activeName || 'Unnamed'}
+            </span>
           </span>
           <Divider />
         </>

@@ -203,6 +203,9 @@ const useStore = create((set, get) => {
         conservationMetric: 'identity', // 'identity' | 'entropy'
       },
       editingEnabled: false,
+      // The file these documents came from, for the stats panel. FASTA names the
+      // sequences, not the set, so the file name is the only name the set has.
+      fileName: '',
       // How far out the view can go: the zoom at which the longest sequence just
       // fills the window. Derived from the canvas, so it moves when the window is
       // resized or the sequences change; never persisted.
@@ -256,7 +259,7 @@ const useStore = create((set, get) => {
 
     // --- Document lifecycle ---
 
-    loadWorkspace: (records) => {
+    loadWorkspace: (records, fileName = '') => {
       const documents = records.map(r => createDocument(r.name, r.sequence));
       const { workspace } = get();
       set({
@@ -265,6 +268,7 @@ const useStore = create((set, get) => {
           documents,
           activeDocId: documents[0]?.id ?? null,
           editingEnabled: false, // newly opened documents start locked, as in Geneious
+          fileName,
           // The old limit was measured against sequences that are gone; the
           // canvas sets the new one on its next frame.
           minZoom: MIN_ZOOM,
