@@ -82,6 +82,91 @@ function loadPersistedDocuments() {
 
 const initialDocuments = loadPersistedDocuments();
 
+// The view settings a freshly-opened file starts with — kept as one object so a
+// new file entry and the very first workspace can build from the same defaults.
+const DEFAULT_VIEW_SETTINGS = {
+  lineWidth: 0, // 0 = auto-calculate from canvas width
+  showComplement: false,
+  showConsensus: true, // only rendered when stacked (>1 document) regardless
+  consensusThreshold: 0.5, // min share of non-gap calls needed to call a base rather than N
+  highlightMode: 'none', // 'none' | 'consensus' | 'reference' — grey out agreeing bases
+  referenceDocId: null, // which document 'reference' highlighting compares against
+  fullscreen: false,
+  zoom: 1, // ctrl+wheel scale on the width of a base column
+  nameGutterWidth: null, // null = sized to the longest name; a number = dragged
+  colorPalette: DEFAULT_PALETTE, // base colours; independent of the light/dark theme
+  showColumnGuides: false, // faint banding every ten columns
+  showMinimap: true, // overview strip under the ruler
+  showConservation: false, // per-column conservation histogram
+  showAnnotations: true, // feature lane under each sequence
+  conservationMetric: 'identity', // 'identity' | 'entropy'
+};
+
+// Multiple files can be open at once, switched between from the files panel.
+// Only the *active* file's state lives at the top level of `workspace` (as
+// `documents`, `activeDocId`, `viewSettings`, undo stacks, and so on) so every
+// other action can keep reading/writing those fields exactly as it always has.
+// `workspace.files` holds the rest, each a full snapshot of those same fields
+// for a file that isn't the one currently on screen; switching files moves the
+// outgoing file's live state into its entry and the incoming entry's state up
+// to the top level.
+function makeFileEntry(documents, name, viewSettings) {
+  return {
+    id: `file-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+    name,
+    documents,
+    activeDocId: documents[0]?.id ?? null,
+    editingEnabled: false, // newly opened documents start locked, as in Geneious
+    minZoom: MIN_ZOOM,
+    hiddenDocIds: new Set(),
+    pinnedDocIds: new Set(),
+    groups: [],
+    selectedDocIds: new Set(),
+    lastSelectionClickId: null,
+    columnCursor: null,
+    columnSelection: null,
+    renamingDocId: null,
+    workspaceHistory: [],
+    workspaceFuture: [],
+    // A reference belongs to documents that came with the old file, and a
+    // reference is an explicit choice, so a new file starts without one.
+    viewSettings: { ...viewSettings, referenceDocId: null },
+  };
+}
+
+/** The fields of `entry` that get spread onto the top level of `workspace`. */
+function fileFieldsOf(entry) {
+  const { id, name, ...fields } = entry;
+  return fields;
+}
+
+/** Package the currently active file's live top-level state back into an entry. */
+function snapshotActiveFile(workspace) {
+  return {
+    id: workspace.activeFileId,
+    name: workspace.fileName,
+    documents: workspace.documents,
+    activeDocId: workspace.activeDocId,
+    editingEnabled: workspace.editingEnabled,
+    minZoom: workspace.minZoom,
+    hiddenDocIds: workspace.hiddenDocIds,
+    pinnedDocIds: workspace.pinnedDocIds,
+    groups: workspace.groups,
+    selectedDocIds: workspace.selectedDocIds,
+    lastSelectionClickId: workspace.lastSelectionClickId,
+    columnCursor: workspace.columnCursor,
+    columnSelection: workspace.columnSelection,
+    renamingDocId: workspace.renamingDocId,
+    workspaceHistory: workspace.workspaceHistory,
+    workspaceFuture: workspace.workspaceFuture,
+    viewSettings: workspace.viewSettings,
+  };
+}
+
+const initialFile = initialDocuments.length > 0
+  ? makeFileEntry(initialDocuments, '', DEFAULT_VIEW_SETTINGS)
+  : null;
+
 let toastTimer = null;
 
 const useStore = create((set, get) => {
@@ -183,48 +268,37 @@ const useStore = create((set, get) => {
 
   return {
     workspace: {
-      documents: initialDocuments,
-      activeDocId: initialDocuments[0]?.id ?? null,
-      viewSettings: {
-        lineWidth: 0, // 0 = auto-calculate from canvas width
-        showComplement: false,
-        showConsensus: true, // only rendered when stacked (>1 document) regardless
-        consensusThreshold: 0.5, // min share of non-gap calls needed to call a base rather than N
-        highlightMode: 'none', // 'none' | 'consensus' | 'reference' — grey out agreeing bases
-        referenceDocId: null, // which document 'reference' highlighting compares against
-        fullscreen: false,
-        zoom: 1, // ctrl+wheel scale on the width of a base column
-        nameGutterWidth: null, // null = sized to the longest name; a number = dragged
-        colorPalette: DEFAULT_PALETTE, // base colours; independent of the light/dark theme
-        showColumnGuides: false, // faint banding every ten columns
-        showMinimap: true, // overview strip under the ruler
-        showConservation: false, // per-column conservation histogram
-        showAnnotations: true, // feature lane under each sequence
-        conservationMetric: 'identity', // 'identity' | 'entropy'
-      },
-      editingEnabled: false,
-      // The file these documents came from, for the stats panel. FASTA names the
-      // sequences, not the set, so the file name is the only name the set has.
-      fileName: '',
-      // How far out the view can go: the zoom at which the longest sequence just
-      // fills the window. Derived from the canvas, so it moves when the window is
-      // resized or the sequences change; never persisted.
-      minZoom: MIN_ZOOM,
+      // Every loaded file, as a switchable entry — see `makeFileEntry` above.
+      // The currently active one's state also lives at the top level of this
+      // object (documents, activeDocId, viewSettings, ...); the rest sit here
+      // until switched to.
+      files: initialFile ? [initialFile] : [],
+      activeFileId: initialFile?.id ?? null,
+      ...(initialFile
+        ? fileFieldsOf(initialFile)
+        : {
+            documents: [],
+            activeDocId: null,
+            editingEnabled: false,
+            minZoom: MIN_ZOOM,
+            hiddenDocIds: new Set(),
+            pinnedDocIds: new Set(),
+            groups: [],
+            selectedDocIds: new Set(),
+            lastSelectionClickId: null,
+            columnCursor: null,
+            columnSelection: null,
+            renamingDocId: null,
+            workspaceHistory: [],
+            workspaceFuture: [],
+            viewSettings: DEFAULT_VIEW_SETTINGS,
+          }),
+      // The file these documents came from, for the stats panel and the files
+      // panel. FASTA names the sequences, not the set, so the file name is the
+      // only name the set has.
+      fileName: initialFile?.name ?? '',
       dragInsertIndex: null, // transient drag-to-move preview position
       rowDropIndex: null, // transient row-reorder drop line, as a visual row index
-      hiddenDocIds: new Set(), // tracks kept out of the layout without deleting them
-      pinnedDocIds: new Set(), // tracks frozen at the top of the alignment
-      groups: [], // Array<{ id, name, docIds: string[], collapsed: boolean }>
-      selectedDocIds: new Set(), // row (whole-sequence) multi-select, for deletion
-      lastSelectionClickId: null, // anchor for shift-click range-select on rows
-      columnCursor: null, // alignment-column index; typing edits every row at this column
-      columnSelection: null, // { start, end } — column range selected by ruler drag
-      renamingDocId: null, // document whose name the rename dialog is editing
-      // Workspace-level undo/redo for operations that affect the document list
-      // (e.g. deletion). Per-document edits are tracked inside each document's
-      // own history/future arrays in sequenceModel.js.
-      workspaceHistory: [], // Array<WorkspaceCommand>
-      workspaceFuture: [], // Array<WorkspaceCommand>
     },
 
     theme: loadPersistedTheme(),
@@ -259,38 +333,118 @@ const useStore = create((set, get) => {
 
     // --- Document lifecycle ---
 
+    // Opens `records` as a new file alongside whatever is already open, and
+    // switches to it — it does not replace the current file, only adds one.
     loadWorkspace: (records, fileName = '') => {
       const documents = records.map(r => createDocument(r.name, r.sequence));
       const { workspace } = get();
+      const newFile = makeFileEntry(documents, fileName, workspace.viewSettings);
+
+      const files = workspace.activeFileId
+        ? workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f))
+        : workspace.files;
+
       set({
         workspace: {
           ...workspace,
-          documents,
-          activeDocId: documents[0]?.id ?? null,
-          editingEnabled: false, // newly opened documents start locked, as in Geneious
-          fileName,
-          // The old limit was measured against sequences that are gone; the
-          // canvas sets the new one on its next frame.
-          minZoom: MIN_ZOOM,
+          files: [...files, newFile],
+          activeFileId: newFile.id,
+          fileName: newFile.name,
+          ...fileFieldsOf(newFile),
           dragInsertIndex: null,
           rowDropIndex: null,
-          selectedDocIds: new Set(),
-          columnCursor: null,
-          columnSelection: null,
-          renamingDocId: null,
-          // Visibility, pinning and grouping all name documents that are gone.
-          hiddenDocIds: new Set(),
-          pinnedDocIds: new Set(),
-          groups: [],
-          // The old reference belongs to documents that are gone, and a reference
-          // is an explicit choice, so the new workspace starts without one.
-          viewSettings: { ...workspace.viewSettings, referenceDocId: null },
-          // A new workspace starts fresh — stale undo/redo entries would apply
-          // to documents that no longer exist.
-          workspaceHistory: [],
-          workspaceFuture: [],
         },
         stats: documents[0] ? getStats(documents[0].raw) : EMPTY_STATS,
+      });
+    },
+
+    /** Switch to an already-loaded file, saving the outgoing one's live state first. */
+    switchFile: (fileId) => {
+      const { workspace } = get();
+      if (workspace.activeFileId === fileId) return;
+
+      const files = workspace.activeFileId
+        ? workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f))
+        : workspace.files;
+      const target = files.find(f => f.id === fileId);
+      if (!target) return;
+
+      set({
+        workspace: {
+          ...workspace,
+          files,
+          activeFileId: target.id,
+          fileName: target.name,
+          ...fileFieldsOf(target),
+          dragInsertIndex: null,
+          rowDropIndex: null,
+        },
+        stats: target.documents.find(d => d.id === target.activeDocId)
+          ? getStats(target.documents.find(d => d.id === target.activeDocId).raw)
+          : EMPTY_STATS,
+      });
+    },
+
+    /** Close a loaded file. Closing the active one switches to another, if any remain. */
+    closeFile: (fileId) => {
+      const { workspace } = get();
+      if (!workspace.files.some(f => f.id === fileId)) return;
+      const closingActive = workspace.activeFileId === fileId;
+
+      const survivors = (closingActive
+        ? workspace.files
+        : workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f))
+      ).filter(f => f.id !== fileId);
+
+      if (!closingActive) {
+        set({ workspace: { ...workspace, files: survivors } });
+        return;
+      }
+
+      if (survivors.length === 0) {
+        set({
+          workspace: {
+            ...workspace,
+            files: [],
+            activeFileId: null,
+            fileName: '',
+            documents: [],
+            activeDocId: null,
+            editingEnabled: false,
+            minZoom: MIN_ZOOM,
+            hiddenDocIds: new Set(),
+            pinnedDocIds: new Set(),
+            groups: [],
+            selectedDocIds: new Set(),
+            lastSelectionClickId: null,
+            columnCursor: null,
+            columnSelection: null,
+            renamingDocId: null,
+            workspaceHistory: [],
+            workspaceFuture: [],
+            viewSettings: { ...workspace.viewSettings, referenceDocId: null },
+            dragInsertIndex: null,
+            rowDropIndex: null,
+          },
+          stats: EMPTY_STATS,
+        });
+        return;
+      }
+
+      const next = survivors[0];
+      set({
+        workspace: {
+          ...workspace,
+          files: survivors,
+          activeFileId: next.id,
+          fileName: next.name,
+          ...fileFieldsOf(next),
+          dragInsertIndex: null,
+          rowDropIndex: null,
+        },
+        stats: next.documents.find(d => d.id === next.activeDocId)
+          ? getStats(next.documents.find(d => d.id === next.activeDocId).raw)
+          : EMPTY_STATS,
       });
     },
 

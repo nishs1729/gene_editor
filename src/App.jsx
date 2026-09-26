@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import useStore from './store.js';
 import Toolbar from './Toolbar.jsx';
 import StatsPanel from './StatsPanel.jsx';
+import FilesPanel from './FilesPanel.jsx';
 import SequenceCanvas from './SequenceCanvas.jsx';
 import SelectionReadout from './SelectionReadout.jsx';
 import RenameDialog from './RenameDialog.jsx';
@@ -28,6 +29,7 @@ export default function App() {
   const theme = useStore(s => s.theme);
   const toggleFullscreen = useStore(s => s.toggleFullscreen);
   const [dropActive, setDropActive] = useState(false);
+  const [filesPanelCollapsed, setFilesPanelCollapsed] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -88,30 +90,33 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [fullscreen, toggleFullscreen]);
 
-  // Dropping a FASTA file anywhere on the window opens it.
+  // Dropping one or more FASTA files anywhere on the window opens each as its
+  // own file, switching to whichever one happens to finish reading last.
   function handleDrop(e) {
     e.preventDefault();
     setDropActive(false);
-    const file = e.dataTransfer?.files?.[0];
-    if (!file) return;
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (files.length === 0) return;
 
     const store = useStore.getState();
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const records = parseFasta(ev.target.result).filter(r => r.sequence.length > 0);
-      if (records.length === 0) {
-        store.showToast('No valid sequences found in file', 'error');
-        return;
-      }
-      store.loadWorkspace(records, file.name);
-      store.showToast(
-        records.length === 1
-          ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
-          : `Loaded ${records.length} sequences`,
-        'info'
-      );
-    };
-    reader.readAsText(file);
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const records = parseFasta(ev.target.result).filter(r => r.sequence.length > 0);
+        if (records.length === 0) {
+          store.showToast(`No valid sequences found in "${file.name}"`, 'error');
+          return;
+        }
+        store.loadWorkspace(records, file.name);
+        store.showToast(
+          records.length === 1
+            ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
+            : `Loaded ${records.length} sequences from "${file.name}"`,
+          'info'
+        );
+      };
+      reader.readAsText(file);
+    });
   }
 
   return (
@@ -123,9 +128,17 @@ export default function App() {
     >
       <Toolbar />
       {!fullscreen && <StatsPanel />}
-      <div className="canvas-area">
-        <SequenceCanvas />
-        <FindBar />
+      <div className="main-area">
+        {!fullscreen && (
+          <FilesPanel
+            collapsed={filesPanelCollapsed}
+            onToggleCollapsed={() => setFilesPanelCollapsed(v => !v)}
+          />
+        )}
+        <div className="canvas-area">
+          <SequenceCanvas />
+          <FindBar />
+        </div>
       </div>
       {/* The status bar stays in fullscreen: it is where zoom and the view
           options live, and losing them is worse than losing 30px of canvas. */}

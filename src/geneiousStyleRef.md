@@ -118,3 +118,22 @@ Used whenever more than one record is loaded; a single record keeps the wrapped 
 - **Reference row**: its name cell gets a green wash. A selected row's blue wins
   while the row is selected, which it no longer is once a reference is set.
 - Rows are unwrapped and virtualized in both axes
+
+## Files Panel
+Multiple files can be open at once — loading a new one adds it rather than replacing
+what's already there. Each keeps its own documents, selection, zoom, view settings and
+undo history, restored exactly as left when you switch back to it.
+- **Width**: 180px, collapsible to a 28px strip via the `«`/`»` toggle in its header
+- **Layout**: the panel and the canvas sit side by side in `.main-area`, a row
+  flex container. Both `.main-area` and `.canvas-area` need `min-width: 0`: with
+  the default `min-width: auto` a flex item may be sized by its content, and
+  Firefox sizes the canvas to the whole alignment's width — tens of thousands of
+  pixels — until it passes the maximum canvas size and paints nothing at all.
+- **Placement**: fixed to the left of the canvas, below the toolbar and stats panel
+- **Rows**: one per loaded file, name (ellipsis-truncated) + document count; the
+  active file is tinted with the accent color; hovering reveals a `×` to close it
+- **Info panel**: the active file's name is shown as the first item in the stats
+  panel, right above the ruler — the same `fileName` the files panel shows for that
+  row, so the two never disagree
+- Closing the active file switches to the next loaded one, or clears the workspace
+  if it was the last one open

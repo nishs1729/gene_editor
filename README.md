@@ -6,6 +6,7 @@ A fast, browser-based viewer and editor for DNA/RNA sequences, styled after Gene
 
 ## What it does
 
+- **Work with several files at once** — load (or drag in) more than one FASTA file and switch between them from the files panel on the left; each keeps its own view, selection, zoom, and undo history exactly as you left it.
 - **View any FASTA file** — a single sequence wraps across the screen; multiple sequences show as a stacked alignment, one row each, with a shared ruler and name column.
 - **Colour-coded bases** — every base and IUPAC ambiguity code (A, T, G, C, and the rest) gets its own colour, so patterns and mismatches are easy to spot at a glance.
 - **Edit sequences** — sequences open read-only; click **Allow Editing** to type, paste, cut, copy, delete, and undo/redo changes.
@@ -21,7 +22,7 @@ A fast, browser-based viewer and editor for DNA/RNA sequences, styled after Gene
 
 ## Basic usage
 
-1. Click **Load FASTA** and pick a `.fasta`, `.fa`, `.fna`, `.fas`, `.aln`, or `.txt` file. One record opens as a single sequence; several open as an alignment.
+1. Click **Load FASTA** (or drag files onto the window) and pick one or more `.fasta`, `.fa`, `.fna`, `.fas`, `.aln`, or `.txt` files. One record opens as a single sequence; several open as an alignment. Each file appears in the files panel on the left — click one to switch to it, or the `«`/`»` button to collapse the panel out of the way.
 2. Click a sequence to select it, click and drag to select a range of bases, or click a name to select a whole row.
 3. Click **Allow Editing** before making any changes — this is a safety catch so you don't edit a sequence by accident.
 4. Use the toolbar to toggle the complement strand, the consensus row, disagreement highlighting, or a reference sequence.

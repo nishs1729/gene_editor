@@ -435,12 +435,141 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ===== Main area (files panel + canvas) ===== */
+.main-area {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ===== Files Panel ===== */
+.files-panel {
+  display: flex;
+  flex-direction: column;
+  width: 180px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.files-panel-collapsed {
+  width: 28px;
+}
+
+.files-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.files-panel-collapsed .files-panel-header {
+  justify-content: center;
+}
+
+.files-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.files-panel-toggle {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 4px;
+}
+
+.files-panel-toggle:hover {
+  background: var(--btn-bg-hover);
+  color: var(--text-primary);
+}
+
+.files-panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.files-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.files-panel-item:hover {
+  background: var(--btn-bg-hover);
+}
+
+.files-panel-item-active {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+.files-panel-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-panel-item-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.files-panel-item-close {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+}
+
+.files-panel-item:hover .files-panel-item-close {
+  opacity: 1;
+}
+
+.files-panel-item-close:hover {
+  background: var(--btn-bg-hover);
+  color: var(--text-primary);
+}
+
 /* ===== Sequence Canvas ===== */
+/* `min-width: 0` is load-bearing: as a flex item beside the files panel, the
+   default `min-width: auto` lets this grow to the alignment's full width —
+   Firefox does exactly that, sizing the canvas to tens of thousands of pixels
+   until it exceeds the maximum canvas size and paints nothing at all. */
 .canvas-area {
   position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
+  min-width: 0;
 }
 
 .app-drop-active .canvas-area::after {

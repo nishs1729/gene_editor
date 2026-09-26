@@ -135,6 +135,13 @@ export class CanvasRenderer {
     this._bgBuckets = new Map();
     this._fgBuckets = new Map();
     this._gutterWidth = NAME_GUTTER_MIN;
+
+    // Measuring every name, and plotting every column of the overview, cost more
+    // than everything else on a large alignment, and neither changes when the
+    // cursor moves or a row is selected. Both are held until their inputs do.
+    this._gutterCache = { names: null, width: NAME_GUTTER_MIN };
+    this._minimapCache = { bars: null, raws: null, width: 0, height: 0, maxLen: 0 };
+    this._naturalCellWidth_ = 0;
   }
 
   setTheme(name) {
@@ -218,10 +225,16 @@ export class CanvasRenderer {
     return fits >= MIN_GLYPH_FONT ? fits : 0;
   }
 
-  /** Column width at zoom 1, the unit "fit to width" solves against. */
+  /**
+   * Column width at zoom 1, the unit "fit to width" solves against. The font it
+   * measures never changes, so this is measured once.
+   */
   _naturalCellWidth() {
-    this.ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
-    return this._widestGlyphWidth() + CELL_SPACING;
+    if (this._naturalCellWidth_ === 0) {
+      this.ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
+      this._naturalCellWidth_ = this._widestGlyphWidth() + CELL_SPACING;
+    }
+    return this._naturalCellWidth_;
   }
 
   /**
@@ -323,17 +336,29 @@ export class CanvasRenderer {
       return this._gutterWidth;
     }
 
+    // Measuring every name is only worth redoing when the names themselves
+    // change; a moving cursor or a new selection leaves them alone.
+    const cache = this._gutterCache;
+    const documents = state.documents;
+    if (cache.names && cache.names.length === documents.length
+      && documents.every((d, i) => cache.names[i] === d.name)) {
+      this._gutterWidth = cache.width;
+      return cache.width;
+    }
+
     const ctx = this.ctx;
     ctx.font = `${NAME_FONT_SIZE}px ${FONT_FAMILY}`;
     let widest = 0;
-    for (const doc of state.documents) {
+    for (const doc of documents) {
       const w = ctx.measureText(doc.name || 'Unnamed').width;
       if (w > widest) widest = w;
     }
-    const needed = NAME_PADDING + this.getNumberWidth(state.documents.length) + widest + NAME_PADDING;
+    const needed = NAME_PADDING + this.getNumberWidth(documents.length) + widest + NAME_PADDING;
     this._gutterWidth = Math.round(
       Math.min(NAME_GUTTER_MAX, Math.max(NAME_GUTTER_MIN, needed))
     );
+    cache.names = documents.map(d => d.name);
+    cache.width = this._gutterWidth;
     return this._gutterWidth;
   }
 
@@ -893,29 +918,15 @@ export class CanvasRenderer {
     ctx.textAlign = 'left';
     ctx.fillText('Overview', NAME_PADDING, top + MINIMAP_HEIGHT / 2);
 
-    // One bar per pixel column: at this scale there is no point sampling finer.
-    // Within a pixel only a few columns are inspected, so the strip costs the
-    // same on a megabase alignment as on a short one.
-    const documents = state.documents;
-    const columnsPerPixel = maxLen / width;
-    const stride = Math.max(1, Math.round(columnsPerPixel / SAMPLES_PER_PIXEL));
+    // Measuring the coverage reads every row, which on a large alignment costs
+    // more than the rest of the frame put together — and it cannot change when
+    // the scroll, cursor or selection does, which is what most redraws are
+    // about. So the bars are measured once and only the painting is per frame.
+    const bars = this._minimapBars(state.documents, width, trackHeight, maxLen);
     ctx.fillStyle = this.theme.minimapTrack;
-    for (let px = 0; px < width; px++) {
-      const from = Math.floor(px * columnsPerPixel);
-      const to = Math.max(from + 1, Math.floor((px + 1) * columnsPerPixel));
-      let covered = 0;
-      let total = 0;
-      for (const doc of documents) {
-        for (let col = from; col < to; col += stride) {
-          const c = doc.raw[col];
-          if (c === undefined) continue;
-          total++;
-          if (c !== GAP_CHAR) covered++;
-        }
-      }
-      if (total === 0) continue;
-      const h = Math.max(1, Math.round((covered / total) * trackHeight));
-      ctx.fillRect(gutter + px, trackTop + trackHeight - h, 1, h);
+    for (let px = 0; px < bars.length; px++) {
+      const h = bars[px];
+      if (h > 0) ctx.fillRect(gutter + px, trackTop + trackHeight - h, 1, h);
     }
 
     // The viewport box, clamped to stay grabbable when the view is zoomed right out.
@@ -933,6 +944,55 @@ export class CanvasRenderer {
     ctx.moveTo(0, top + MINIMAP_HEIGHT - 0.5);
     ctx.lineTo(this.width, top + MINIMAP_HEIGHT - 0.5);
     ctx.stroke();
+  }
+
+  /**
+   * Height of the overview's coverage bar for each pixel column, 0 where the
+   * alignment has nothing at all. One bar per pixel, sampling only a few columns
+   * within each, so it costs the same on a megabase alignment as on a short one
+   * — but it still reads every row, which is the most expensive thing a frame
+   * does on a large alignment. It depends only on the sequences, so the result
+   * is kept until one of them changes.
+   * @returns {Int32Array}
+   */
+  _minimapBars(documents, width, trackHeight, maxLen) {
+    const cache = this._minimapCache;
+    const fresh = cache.bars
+      && cache.width === width
+      && cache.height === trackHeight
+      && cache.maxLen === maxLen
+      && cache.raws.length === documents.length
+      && documents.every((d, i) => cache.raws[i] === d.raw);
+    if (fresh) return cache.bars;
+
+    // A container's width is routinely fractional, and a typed array's length
+    // may not be; the last bar covers the part-pixel, as the old loop did.
+    const bars = new Int32Array(Math.ceil(width));
+    const columnsPerPixel = maxLen / width;
+    const stride = Math.max(1, Math.round(columnsPerPixel / SAMPLES_PER_PIXEL));
+    for (let px = 0; px < bars.length; px++) {
+      const from = Math.floor(px * columnsPerPixel);
+      const to = Math.max(from + 1, Math.floor((px + 1) * columnsPerPixel));
+      let covered = 0;
+      let total = 0;
+      for (const doc of documents) {
+        const raw = doc.raw;
+        for (let col = from; col < to; col += stride) {
+          const c = raw[col];
+          if (c === undefined) continue;
+          total++;
+          if (c !== GAP_CHAR) covered++;
+        }
+      }
+      bars[px] = total === 0 ? 0 : Math.max(1, Math.round((covered / total) * trackHeight));
+    }
+
+    cache.bars = bars;
+    cache.raws = documents.map(d => d.raw);
+    cache.width = width;
+    cache.height = trackHeight;
+    cache.maxLen = maxLen;
+    return bars;
   }
 
   /**

@@ -87,26 +87,28 @@ export default function Toolbar() {
   const selectedCount = selectedDocIds.size;
 
   function handleFileLoad(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = [...(e.target.files ?? [])];
+    if (files.length === 0) return;
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const records = parseFasta(ev.target.result).filter(r => r.sequence.length > 0);
-      if (records.length === 0) {
-        showToast('No valid sequences found in file', 'error');
-        return;
-      }
-      loadWorkspace(records, file.name);
-      showToast(
-        records.length === 1
-          ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
-          : `Loaded ${records.length} sequences`,
-        'info'
-      );
-    };
-    reader.readAsText(file);
-    e.target.value = ''; // allow re-loading the same file
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const records = parseFasta(ev.target.result).filter(r => r.sequence.length > 0);
+        if (records.length === 0) {
+          showToast(`No valid sequences found in "${file.name}"`, 'error');
+          return;
+        }
+        loadWorkspace(records, file.name);
+        showToast(
+          records.length === 1
+            ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
+            : `Loaded ${records.length} sequences from "${file.name}"`,
+          'info'
+        );
+      };
+      reader.readAsText(file);
+    });
+    e.target.value = ''; // allow re-loading the same file(s)
   }
 
   /** Exports the selected sequences, or every sequence when none are selected. */
@@ -215,7 +217,7 @@ export default function Toolbar() {
         <button
           className="toolbar-btn toolbar-btn-primary"
           onClick={() => fileInputRef.current?.click()}
-          title="Load a FASTA file"
+          title="Load one or more FASTA files"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M2 14h12M8 2v9M4 7l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" transform="rotate(180 8 8)"/>
@@ -227,6 +229,7 @@ export default function Toolbar() {
           type="file"
           accept=".fasta,.fa,.fna,.fas,.aln,.txt"
           onChange={handleFileLoad}
+          multiple
           style={{ display: 'none' }}
         />
 

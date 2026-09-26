@@ -911,3 +911,88 @@ describe('fit to width', () => {
     expect(width).toBeLessThanOrEqual(r.width + 1);
   });
 });
+
+describe('overview coverage bars', () => {
+  const WIDTH = 100;
+  const TRACK_H = 20;
+
+  function docsFrom(...raws) {
+    return raws.map((raw, i) => createDocument(`seq${i}`, raw));
+  }
+
+  it('plots coverage per pixel column, tall where every row has a base', () => {
+    const documents = docsFrom('ACGT'.repeat(50), 'ACGT'.repeat(50));
+    const bars = r._minimapBars(documents, WIDTH, TRACK_H, 200);
+    expect(bars.length).toBe(WIDTH);
+    expect([...bars].every(h => h === TRACK_H)).toBe(true);
+  });
+
+  it('plots a short bar where the alignment is mostly gaps', () => {
+    // First half all gaps, second half all bases.
+    const documents = docsFrom('-'.repeat(100) + 'A'.repeat(100));
+    const bars = r._minimapBars(documents, WIDTH, TRACK_H, 200);
+    expect(bars[0]).toBeLessThan(TRACK_H);
+    expect(bars[WIDTH - 1]).toBe(TRACK_H);
+  });
+
+  it('reuses the measurement while the sequences are unchanged', () => {
+    const documents = docsFrom('ACGT'.repeat(50), 'ACGT'.repeat(50));
+    const first = r._minimapBars(documents, WIDTH, TRACK_H, 200);
+    // A new array with the same documents: what a selection or cursor move leaves.
+    const second = r._minimapBars([...documents], WIDTH, TRACK_H, 200);
+    expect(second).toBe(first);
+  });
+
+  it('re-measures when a sequence changes', () => {
+    const documents = docsFrom('ACGT'.repeat(50), 'ACGT'.repeat(50));
+    const first = r._minimapBars(documents, WIDTH, TRACK_H, 200);
+    const edited = [documents[0], { ...documents[1], raw: '-'.repeat(200) }];
+    const second = r._minimapBars(edited, WIDTH, TRACK_H, 200);
+    expect(second).not.toBe(first);
+    expect(second[0]).toBeLessThan(first[0]);
+  });
+
+  it('re-measures when a sequence is removed', () => {
+    const documents = docsFrom('ACGT'.repeat(50), 'ACGT'.repeat(50));
+    const first = r._minimapBars(documents, WIDTH, TRACK_H, 200);
+    const second = r._minimapBars(documents.slice(0, 1), WIDTH, TRACK_H, 200);
+    expect(second).not.toBe(first);
+  });
+
+  it('handles a fractional strip width, which is what a container reports', () => {
+    const documents = docsFrom('ACGT'.repeat(50));
+    const bars = r._minimapBars(documents, 100.4, TRACK_H, 200);
+    // One bar per pixel, with the last covering the part-pixel.
+    expect(bars.length).toBe(101);
+  });
+
+  it('re-measures when the strip is resized', () => {
+    const documents = docsFrom('ACGT'.repeat(50));
+    const first = r._minimapBars(documents, WIDTH, TRACK_H, 200);
+    const second = r._minimapBars(documents, WIDTH + 40, TRACK_H, 200);
+    expect(second).not.toBe(first);
+    expect(second.length).toBe(WIDTH + 40);
+  });
+});
+
+describe('name gutter measurement', () => {
+  it('reuses the measured width while the names are unchanged', () => {
+    const state = stackedState(6);
+    const first = r.getGutterWidth(state);
+    // Same names, new document objects: what an edit to a sequence produces.
+    const moved = { ...state, documents: state.documents.map(d => ({ ...d })) };
+    expect(r.getGutterWidth(moved)).toBe(first);
+  });
+
+  it('re-measures when a name changes', () => {
+    const state = stackedState(6);
+    r.getGutterWidth(state);
+    const renamed = {
+      ...state,
+      documents: state.documents.map((d, i) =>
+        i === 0 ? { ...d, name: 'a considerably longer sequence name than before' } : d
+      ),
+    };
+    expect(r.getGutterWidth(renamed)).toBeGreaterThan(r.getGutterWidth(state));
+  });
+});
