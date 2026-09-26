@@ -48,7 +48,7 @@ Reading and hand-curating sequence data: checking a Sanger read against a refere
 - **Drag a selected span** left or right to slide bases through the gaps, as one undoable step.
 - **Transforms** — reverse, complement, reverse-complement, transcribe and reverse-transcribe, applied to the active sequence, every selected sequence, or just the selected span.
 - **Find and replace** — exact, IUPAC-aware (degenerate codes match the bases they stand for) or regex, with up to three mismatches, optional reverse-strand matching, across one sequence or all of them.
-- **Annotations** — label a span as a feature with a type, strand, colour and notes; features draw in a lane under their sequence.
+- **Annotations** — label a span as a feature with a type, strand, colour and notes. Features draw in a lane under their sequence, stacked into sub-lanes where they overlap, and follow the bases they cover when you edit around them. Click one to select its span, double-click to edit it.
 - **Undo/redo everything**, including whole-workspace operations like deleting or reordering sequences.
 
 **Analysis**

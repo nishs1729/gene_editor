@@ -4,6 +4,7 @@ vi.stubGlobal('window', { devicePixelRatio: 1 });
 
 const { CanvasRenderer } = await import('../canvasRenderer.js');
 const { createDocument } = await import('../sequenceModel.js');
+const { createFeature } = await import('../annotations.js');
 
 // A canvas context stub with a predictable metric: every glyph is 8px wide, so
 // cellWidth is 10 (8 rounded up, +2 spacing) and cellHeight is 20 (14pt + 6 pad).
@@ -27,7 +28,7 @@ function makeRenderer(width = 1000, height = 600) {
     fillRect(x, y, w, h) { rects.push({ x, y, w, h, style: this.fillStyle }); },
     fillText(text, x, y) { glyphs.push({ text, x, y, style: this.fillStyle }); },
     setTransform() {}, strokeRect() {},
-    beginPath() {}, moveTo() {}, lineTo() {}, rect() {}, arc() {},
+    beginPath() {}, closePath() {}, moveTo() {}, lineTo() {}, rect() {}, arc() {},
     stroke() {}, fill() {}, clip() {}, save() {}, restore() {},
   };
   const canvas = { width, height, style: {}, getContext: () => ctx };
@@ -994,5 +995,61 @@ describe('name gutter measurement', () => {
       ),
     };
     expect(r.getGutterWidth(renamed)).toBeGreaterThan(r.getGutterWidth(state));
+  });
+});
+
+describe('feature annotations', () => {
+  const ANNOTATION_H = 14;
+  const LEFT_MARGIN = 60;
+
+  function withFeatures(spans, count = 1) {
+    const state = stackedState(count, 200);
+    state.viewSettings.showAnnotations = true;
+    state.documents[0] = {
+      ...state.documents[0],
+      features: spans.map(([start, end], i) => createFeature({ label: `feature${i}`, start, end })),
+    };
+    return state;
+  }
+
+  it('reserves one lane per row of features that overlap', () => {
+    r._updateAnnotationLane(withFeatures([[0, 100]]));
+    expect(r.getRowHeight(false)).toBe(CELL_H + ANNOTATION_H + ROW_GAP);
+
+    r._updateAnnotationLane(withFeatures([[0, 100], [10, 20]]));
+    expect(r.getRowHeight(false)).toBe(CELL_H + 2 * ANNOTATION_H + ROW_GAP);
+  });
+
+  it('claims no height when the lane is switched off', () => {
+    const state = withFeatures([[0, 100]]);
+    state.viewSettings.showAnnotations = false;
+    r._updateAnnotationLane(state);
+    expect(r.getRowHeight(false)).toBe(CELL_H + ROW_GAP);
+  });
+
+  it('draws the lane in the wrapped single-sequence view', () => {
+    r.render(withFeatures([[0, 40]]), { top: 0, left: 0 });
+    expect(r.drawn.glyphs.some(g => g.text === 'feature0')).toBe(true);
+  });
+
+  it('hit-tests a feature under the bases of a wrapped row', () => {
+    const state = withFeatures([[0, 40]]);
+    const hit = r.hitTest(LEFT_MARGIN + 5 * CELL_W, RULER_H + CELL_H + 2, { top: 0, left: 0 }, state);
+    expect(hit.kind).toBe('annotation');
+    expect(hit.feature.label).toBe('feature0');
+  });
+
+  it('hit-tests the enclosed feature in the lane below its container', () => {
+    const state = withFeatures([[0, 40], [5, 10]]);
+    const x = LEFT_MARGIN + 6 * CELL_W;
+    const laneTop = RULER_H + CELL_H;
+    const at = y => r.hitTest(x, y, { top: 0, left: 0 }, state).feature.label;
+    expect(at(laneTop + 2)).toBe('feature0');
+    expect(at(laneTop + ANNOTATION_H + 2)).toBe('feature1');
+  });
+
+  it('leaves the bases clickable outside the lane', () => {
+    const state = withFeatures([[0, 40]]);
+    expect(r.hitTest(LEFT_MARGIN + 5 * CELL_W, RULER_H + 2, { top: 0, left: 0 }, state).kind).toBe('seq');
   });
 });

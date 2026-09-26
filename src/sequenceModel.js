@@ -2,6 +2,11 @@
 // All mutation functions are pure — they return new state, not mutate in place.
 
 import { isValidChar, complement, GAP_CHAR } from './iupac.js';
+import {
+  featuresAfterSplice,
+  featuresAfterReverseComplement,
+  featuresAfterMove,
+} from './annotations.js';
 
 const CONSENSUS_THRESHOLD = 0.5;
 
@@ -28,13 +33,30 @@ export function createDocument(name = '', raw = '') {
 
 /**
  * Build the successor document for an edit, recording the command for undo.
+ *
+ * Features annotate bases, not offsets, so they move with the edit. Pass
+ * `nextFeatures` for an edit that rearranges the sequence rather than splicing
+ * it — the generic splice cannot see that a reverse-complement flipped it.
  */
-function applyEdit(doc, newRaw, command) {
+function applyEdit(doc, newRaw, command, nextFeatures) {
+  const current = doc.features ?? [];
+  const features = nextFeatures
+    ?? featuresAfterSplice(current, command.position, command.before.length, command.after.length);
+
+  // Only a command that actually disturbed a feature carries the lists to
+  // restore. Recomputing the inverse on undo could not bring back one the edit
+  // swallowed whole, and every other keystroke would pay to store what it did
+  // not change.
+  const record = features === current
+    ? command
+    : { ...command, featuresBefore: current, featuresAfter: features };
+
   return {
     ...doc,
     raw: newRaw,
     length: newRaw.length,
-    history: [...doc.history, command],
+    features,
+    history: [...doc.history, record],
     future: [], // clear redo stack on new edit
     dirty: true,
   };
@@ -161,7 +183,7 @@ export function moveRange(doc, start, end, dest) {
     position: spanStart,
     before: doc.raw.slice(spanStart, spanEnd),
     after: newRaw.slice(spanStart, spanEnd),
-  });
+  }, featuresAfterMove(doc.features ?? [], start, end, dest));
 }
 
 /**
@@ -224,7 +246,7 @@ export function reverseComplementDoc(doc) {
     position: 0,
     before: doc.raw,
     after: rc,
-  });
+  }, featuresAfterReverseComplement(doc.features ?? [], doc.raw.length));
 }
 
 /**
@@ -263,6 +285,7 @@ export function undo(doc) {
     ...doc,
     raw: newRaw,
     length: newRaw.length,
+    features: command.featuresBefore ?? doc.features,
     history: newHistory,
     future: [...doc.future, command],
     dirty: true,
@@ -303,6 +326,7 @@ export function redo(doc) {
     ...doc,
     raw: newRaw,
     length: newRaw.length,
+    features: command.featuresAfter ?? doc.features,
     history: [...doc.history, command],
     future: newFuture,
     dirty: true,

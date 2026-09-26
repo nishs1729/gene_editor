@@ -98,15 +98,21 @@ export function createMouseHandlers(renderer, getContext, store, requestRender =
       return;
     }
 
-    // Clicking a feature opens it for editing; the bases under it are not the target.
+    // Clicking a feature selects the bases it covers, so the readout describes
+    // it like any other selection and it can be copied or transformed. Editing
+    // the feature itself is a double-click, as renaming a sequence is.
     if (hit.kind === 'annotation') {
       store.setActiveDoc(hit.docId);
-      store.openAnnotation({
-        docId: hit.docId,
-        featureId: hit.feature.id,
-        start: hit.feature.start,
-        end: hit.feature.end,
-      });
+      if (e.detail === 2) {
+        store.openAnnotation({
+          docId: hit.docId,
+          featureId: hit.feature.id,
+          start: hit.feature.start,
+          end: hit.feature.end,
+        });
+      } else {
+        store.setSelection(hit.feature.start, hit.feature.end);
+      }
       return;
     }
 

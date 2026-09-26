@@ -12,7 +12,7 @@ import { getTheme } from './theme.js';
 import { getPalette, DEFAULT_PALETTE } from './palettes.js';
 import { buildRowLayout } from './rowLayout.js';
 import { conservationScore } from './conservation.js';
-import { featureAt } from './annotations.js';
+import { featureAt, packFeatures } from './annotations.js';
 
 // --- Style constants (from geneiousStyleRef.md) ---
 // System sans-serif stack: San Francisco on Mac, Segoe UI on Windows, Roboto on
@@ -130,6 +130,7 @@ export class CanvasRenderer {
     this.flash = null; // { col, start } — the fading marker "jump to position" leaves
     this.hoverDocId = null; // row under the pointer, which reveals its gutter controls
     this.annotationLane = false; // set per frame from the state being drawn
+    this.annotationLanes = 0; // how many sub-lanes the deepest row of features needs
 
     // Reused across frames so per-base drawing doesn't allocate (see _drawBases).
     this._bgBuckets = new Map();
@@ -298,16 +299,25 @@ export class CanvasRenderer {
   getRowHeight(showComplement) {
     let h = this.cellHeight;
     if (showComplement) h += this.complementCellHeight;
-    if (this.annotationLane) h += ANNOTATION_HEIGHT;
+    h += ANNOTATION_HEIGHT * this.annotationLanes;
     return h + ROW_GAP;
   }
 
-  /** Whether the annotation lane is in the layout, for the state being drawn. */
+  /**
+   * How deep the annotation lane is in the layout, for the state being drawn.
+   * Every row is given the deepest row's lane count for the same reason every
+   * row shares a height: rows of differing heights would make every position
+   * calculation a running total.
+   */
   _updateAnnotationLane(state) {
-    this.annotationLane = Boolean(
-      state.viewSettings?.showAnnotations
-      && state.documents?.some(d => d.features?.length > 0)
-    );
+    let depth = 0;
+    if (state.viewSettings?.showAnnotations) {
+      for (const doc of state.documents ?? []) {
+        if (doc.features?.length) depth = Math.max(depth, packFeatures(doc.features).length);
+      }
+    }
+    this.annotationLanes = depth;
+    this.annotationLane = depth > 0;
   }
 
   /** Single-mode row height includes that row's own ruler. */
@@ -517,6 +527,11 @@ export class CanvasRenderer {
             this.complementCellHeight, this.complementFontSize, true
           );
         }
+      }
+
+      if (this.annotationLane && doc.features?.length) {
+        const laneY = baseY + this.cellHeight + (showComplement ? this.complementCellHeight : 0);
+        this._drawFeatures(doc.features, seqStart, seqEnd, xAt, laneY);
       }
 
       if (matches) {
@@ -1165,47 +1180,74 @@ export class CanvasRenderer {
   _drawFeatures(features, firstCol, lastCol, xAt, laneY) {
     const ctx = this.ctx;
     const height = ANNOTATION_HEIGHT - 3;
-    const top = laneY + 1;
+    const lanes = packFeatures(features);
 
-    for (const feature of features) {
-      if (feature.end <= firstCol || feature.start >= lastCol) continue;
-      const x = xAt(feature.start);
-      // A feature that spans a fraction of a pixel is still worth a mark.
-      const width = Math.max(MIN_MARKER_WIDTH, (feature.end - feature.start) * this.cellWidth);
-      const point = Math.min(ANNOTATION_ARROW, width / 2);
-      const forward = feature.strand !== -1;
+    for (let lane = 0; lane < lanes.length; lane++) {
+      const top = laneY + lane * ANNOTATION_HEIGHT + 1;
 
-      ctx.fillStyle = feature.color;
-      ctx.beginPath();
-      if (forward) {
-        ctx.moveTo(x, top);
-        ctx.lineTo(x + width - point, top);
-        ctx.lineTo(x + width, top + height / 2);
-        ctx.lineTo(x + width - point, top + height);
-        ctx.lineTo(x, top + height);
-      } else {
-        ctx.moveTo(x + width, top);
-        ctx.lineTo(x + point, top);
-        ctx.lineTo(x, top + height / 2);
-        ctx.lineTo(x + point, top + height);
-        ctx.lineTo(x + width, top + height);
-      }
-      ctx.closePath();
-      ctx.fill();
+      for (const feature of lanes[lane]) {
+        if (feature.end <= firstCol || feature.start >= lastCol) continue;
+        // Clipped to the columns on screen: in the wrapped view a feature runs
+        // off the end of the line it starts on and the rest belongs to later
+        // lines, and in the stacked view this keeps the label in sight while
+        // scrolled into the middle of a long feature.
+        const from = Math.max(feature.start, firstCol);
+        const to = Math.min(feature.end, lastCol);
+        const x = xAt(from);
+        // A feature that spans a fraction of a pixel is still worth a mark.
+        const width = Math.max(MIN_MARKER_WIDTH, (to - from) * this.cellWidth);
+        const forward = feature.strand !== -1;
+        // The point marks the end the feature reads towards, so only the piece
+        // holding that end gets one — the rest are cut square to read as continuing.
+        const pointed = forward ? to === feature.end : from === feature.start;
+        const point = pointed ? Math.min(ANNOTATION_ARROW, width / 2) : 0;
 
-      if (width > 34) {
-        ctx.save();
+        ctx.fillStyle = feature.color;
         ctx.beginPath();
-        ctx.rect(x, top, width - point, height);
-        ctx.clip();
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = `${RULER_FONT_SIZE}px ${FONT_FAMILY}`;
-        ctx.textBaseline = 'middle';
-        ctx.textAlign = 'left';
-        ctx.fillText(feature.label, x + 4, top + height / 2 + 0.5);
-        ctx.restore();
+        if (forward) {
+          ctx.moveTo(x, top);
+          ctx.lineTo(x + width - point, top);
+          ctx.lineTo(x + width, top + height / 2);
+          ctx.lineTo(x + width - point, top + height);
+          ctx.lineTo(x, top + height);
+        } else {
+          ctx.moveTo(x + width, top);
+          ctx.lineTo(x + point, top);
+          ctx.lineTo(x, top + height / 2);
+          ctx.lineTo(x + point, top + height);
+          ctx.lineTo(x + width, top + height);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        if (width > 34) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, top, width - point, height);
+          ctx.clip();
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = `${RULER_FONT_SIZE}px ${FONT_FAMILY}`;
+          ctx.textBaseline = 'middle';
+          ctx.textAlign = 'left';
+          ctx.fillText(feature.label, x + 4, top + height / 2 + 0.5);
+          ctx.restore();
+        }
       }
     }
+  }
+
+  /**
+   * The feature under a point in a row's annotation lane, or null.
+   * @param {Array<object>} features
+   * @param {number} laneTop - y of the top of the lane block
+   * @param {number} y - pointer y
+   * @param {number} column - the column the pointer is over
+   */
+  _featureAtPoint(features, laneTop, y, column) {
+    const lanes = packFeatures(features);
+    const index = Math.floor((y - laneTop) / ANNOTATION_HEIGHT);
+    if (index < 0 || index >= lanes.length) return null;
+    return featureAt(lanes[index], column);
   }
 
   /** X positions of the eye and pin controls, given the gutter width. */
@@ -1632,10 +1674,11 @@ export class CanvasRenderer {
       if (this.annotationLane && doc.features?.length) {
         const laneTop = rowTop + this.cellHeight
           + (viewSettings.showComplement ? this.complementCellHeight : 0);
-        if (y >= laneTop && y < laneTop + ANNOTATION_HEIGHT) {
-          const feature = featureAt(doc.features, Math.floor((x - gutter + scroll.left) / this.cellWidth));
-          if (feature) return { kind: 'annotation', docId: doc.id, feature };
-        }
+        const feature = this._featureAtPoint(
+          doc.features, laneTop, y,
+          Math.floor((x - gutter + scroll.left) / this.cellWidth)
+        );
+        if (feature) return { kind: 'annotation', docId: doc.id, feature };
       }
 
       return { kind: 'seq', docId: doc.id, index };
@@ -1647,6 +1690,19 @@ export class CanvasRenderer {
     const row = Math.max(0, Math.floor((y + scroll.top) / rowHeight));
     const col = Math.max(0, Math.min(basesPerRow, Math.round((x - LEFT_MARGIN) / this.cellWidth)));
     const index = Math.max(0, Math.min(doc.raw.length, row * basesPerRow + col));
+
+    // The lane sits under the bases of the line the pointer is on, so the column
+    // it covers is that line's own, not the one the nearest base boundary rounds to.
+    if (this.annotationLane && doc.features?.length) {
+      const offset = Math.floor((x - LEFT_MARGIN) / this.cellWidth);
+      if (offset >= 0 && offset < basesPerRow) {
+        const laneTop = row * rowHeight - scroll.top + RULER_HEIGHT + this.cellHeight
+          + (viewSettings.showComplement ? this.complementCellHeight : 0);
+        const feature = this._featureAtPoint(doc.features, laneTop, y, row * basesPerRow + offset);
+        if (feature) return { kind: 'annotation', docId: doc.id, feature };
+      }
+    }
+
     return { kind: 'seq', docId: doc.id, index };
   }
 

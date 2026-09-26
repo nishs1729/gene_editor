@@ -68,6 +68,110 @@ export function featureAt(features = [], column) {
   return null;
 }
 
+/**
+ * Move features through an edit that replaced `removed` bases at `position`
+ * with `inserted` of them. Features keep the bases they annotate: they shift
+ * when the sequence in front of them grows or shrinks, clip when an edit eats
+ * one end, and drop out when it eats all of them.
+ *
+ * Returns the original array when nothing moved, so callers can tell whether an
+ * edit disturbed the features at all.
+ */
+export function featuresAfterSplice(features = [], position, removed, inserted) {
+  if (features.length === 0) return features;
+
+  // A replace rewrites min(removed, inserted) bases where they stand — those
+  // columns keep their coordinates and only the surplus at the far end moves.
+  // Without this a same-length edit, like a substitution or a transform, would
+  // drag every boundary inside it to the edge of the change.
+  const common = Math.min(removed, inserted);
+  const cutStart = position + common;
+  const cutEnd = cutStart + removed - common;
+  const delta = inserted - removed;
+  if (cutStart === cutEnd && delta === 0) return features;
+
+  // Coordinates on the cut boundary resolve outwards, so bases inserted at a
+  // feature's edge land outside it rather than silently joining it.
+  const mapStart = p => (p < cutStart ? p : p >= cutEnd ? p + delta : cutStart);
+  const mapEnd = p => (p <= cutStart ? p : p >= cutEnd ? p + delta : cutStart);
+
+  let changed = false;
+  const next = [];
+  for (const f of features) {
+    const start = mapStart(f.start);
+    const end = mapEnd(f.end);
+    if (end <= start) { changed = true; continue; } // the edit swallowed it whole
+    if (start === f.start && end === f.end) next.push(f);
+    else { next.push({ ...f, start, end }); changed = true; }
+  }
+  return changed ? next : features;
+}
+
+/** Flip features onto the opposite strand of a reverse-complemented sequence. */
+export function featuresAfterReverseComplement(features = [], length) {
+  if (features.length === 0) return features;
+  return features
+    .map(f => ({
+      ...f,
+      start: length - f.end,
+      end: length - f.start,
+      strand: f.strand === -1 ? 1 : -1,
+    }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+/**
+ * Move features through a drag of the bases in [start, end) to `dest`.
+ * A feature wholly inside the moved span travels with it; the rest follow the
+ * sequence closing up behind the span and reopening where it lands.
+ */
+export function featuresAfterMove(features = [], start, end, dest) {
+  if (features.length === 0) return features;
+  const span = end - start;
+  const adjustedDest = dest > end ? dest - span : dest;
+
+  const travelling = features.filter(f => f.start >= start && f.end <= end);
+  const staying = features.filter(f => !(f.start >= start && f.end <= end));
+
+  const closed = featuresAfterSplice(staying, start, span, 0);
+  const reopened = featuresAfterSplice(closed, adjustedDest, 0, span);
+  const moved = travelling.map(f => ({
+    ...f,
+    start: f.start - start + adjustedDest,
+    end: f.end - start + adjustedDest,
+  }));
+
+  return [...reopened, ...moved].sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+const EMPTY_LANES = [];
+const laneCache = new WeakMap();
+
+/**
+ * Sort features into non-overlapping lanes, so an exon inside a gene is drawn
+ * under it rather than on top of it. Longer features take the upper lanes,
+ * which puts the enclosing feature above the ones it contains.
+ *
+ * Memoised on the feature array, which only changes when the features do.
+ * @returns {Array<Array<object>>} one array of disjoint features per lane
+ */
+export function packFeatures(features) {
+  if (!features || features.length === 0) return EMPTY_LANES;
+  const cached = laneCache.get(features);
+  if (cached) return cached;
+
+  const lanes = [];
+  const sorted = [...features].sort((a, b) => a.start - b.start || b.end - a.end);
+  for (const f of sorted) {
+    const lane = lanes.find(l => l[l.length - 1].end <= f.start);
+    if (lane) lane.push(f);
+    else lanes.push([f]);
+  }
+
+  laneCache.set(features, lanes);
+  return lanes;
+}
+
 /** A one-line summary for the hover tooltip. */
 export function describeFeature(feature) {
   const length = feature.end - feature.start;

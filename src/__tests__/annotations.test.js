@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   createFeature, upsertFeature, removeFeature, featureAt, describeFeature,
   colorForType, FEATURE_TYPES, DEFAULT_FEATURE_TYPE,
+  featuresAfterSplice, featuresAfterReverseComplement, featuresAfterMove, packFeatures,
 } from '../annotations.js';
+import {
+  createDocument, insertAt, deleteRange, substitute, reverseComplementDoc, undo, redo,
+} from '../sequenceModel.js';
 
 function makeLocalStorage() {
   const map = new Map();
@@ -145,5 +149,133 @@ describe('store: annotations', () => {
     expect(get().annotationDraft).toMatchObject({ start: 1, end: 4 });
     get().closeAnnotation();
     expect(get().annotationDraft).toBeNull();
+  });
+});
+
+describe('featuresAfterSplice', () => {
+  const f = (start, end, extra = {}) => createFeature({ label: 'f', start, end, ...extra });
+
+  it('leaves a feature in front of the edit alone', () => {
+    const features = [f(2, 6)];
+    expect(featuresAfterSplice(features, 10, 0, 5)).toBe(features);
+  });
+
+  it('shifts a feature after an insertion', () => {
+    const [moved] = featuresAfterSplice([f(10, 20)], 0, 0, 5);
+    expect([moved.start, moved.end]).toEqual([15, 25]);
+  });
+
+  it('grows a feature the insertion lands inside', () => {
+    const [moved] = featuresAfterSplice([f(10, 20)], 15, 0, 5);
+    expect([moved.start, moved.end]).toEqual([10, 25]);
+  });
+
+  it('keeps bases inserted at either edge outside the feature', () => {
+    const [atStart] = featuresAfterSplice([f(10, 20)], 10, 0, 5);
+    expect([atStart.start, atStart.end]).toEqual([15, 25]);
+    const [atEnd] = featuresAfterSplice([f(10, 20)], 20, 0, 5);
+    expect([atEnd.start, atEnd.end]).toEqual([10, 20]);
+  });
+
+  it('shifts a feature after a deletion and clips one the deletion reaches into', () => {
+    const [clipped, shifted] = featuresAfterSplice([f(18, 30), f(40, 50)], 20, 5, 0);
+    expect([clipped.start, clipped.end]).toEqual([18, 25]);
+    expect([shifted.start, shifted.end]).toEqual([35, 45]);
+  });
+
+  it('drops a feature the deletion swallows whole', () => {
+    expect(featuresAfterSplice([f(21, 24)], 20, 5, 0)).toEqual([]);
+  });
+
+  it('does not move anything for a same-length replace', () => {
+    const features = [f(10, 20)];
+    expect(featuresAfterSplice(features, 12, 4, 4)).toBe(features);
+  });
+});
+
+describe('featuresAfterReverseComplement', () => {
+  it('mirrors the coordinates and flips the strand', () => {
+    const features = [createFeature({ label: 'cds', start: 10, end: 20, strand: 1 })];
+    const [flipped] = featuresAfterReverseComplement(features, 100);
+    expect([flipped.start, flipped.end]).toEqual([80, 90]);
+    expect(flipped.strand).toBe(-1);
+  });
+});
+
+describe('featuresAfterMove', () => {
+  it('carries a feature inside the moved span along with it', () => {
+    const features = [createFeature({ label: 'p', start: 10, end: 15 })];
+    const [moved] = featuresAfterMove(features, 10, 15, 50);
+    expect([moved.start, moved.end]).toEqual([45, 50]);
+  });
+
+  it('closes a downstream feature up behind the span that left', () => {
+    const features = [createFeature({ label: 'p', start: 30, end: 40 })];
+    const [moved] = featuresAfterMove(features, 0, 10, 60);
+    expect([moved.start, moved.end]).toEqual([20, 30]);
+  });
+});
+
+describe('packFeatures', () => {
+  it('puts disjoint features in one lane', () => {
+    const lanes = packFeatures([
+      createFeature({ label: 'a', start: 0, end: 10 }),
+      createFeature({ label: 'b', start: 10, end: 20 }),
+    ]);
+    expect(lanes).toHaveLength(1);
+  });
+
+  it('stacks an enclosed feature under the one containing it', () => {
+    const gene = createFeature({ label: 'gene', start: 0, end: 100 });
+    const exon = createFeature({ label: 'exon', start: 10, end: 20 });
+    const lanes = packFeatures([gene, exon]);
+    expect(lanes).toHaveLength(2);
+    expect(lanes[0][0].label).toBe('gene');
+    expect(lanes[1][0].label).toBe('exon');
+  });
+
+  it('returns the same lanes for the same array', () => {
+    const features = [createFeature({ label: 'a', start: 0, end: 10 })];
+    expect(packFeatures(features)).toBe(packFeatures(features));
+  });
+});
+
+describe('features through edits', () => {
+  function docWith(raw, ...spans) {
+    const doc = createDocument('seq', raw);
+    return { ...doc, features: spans.map(([start, end]) => createFeature({ label: 'f', start, end })) };
+  }
+
+  it('moves with an insertion and comes back on undo', () => {
+    const doc = docWith('ACGTACGTAC', [4, 8]);
+    const edited = insertAt(doc, 0, 'GGG');
+    expect([edited.features[0].start, edited.features[0].end]).toEqual([7, 11]);
+
+    const undone = undo(edited);
+    expect([undone.features[0].start, undone.features[0].end]).toEqual([4, 8]);
+
+    const redone = redo(undone);
+    expect([redone.features[0].start, redone.features[0].end]).toEqual([7, 11]);
+  });
+
+  it('restores a feature a deletion swallowed', () => {
+    const doc = docWith('ACGTACGTAC', [4, 6]);
+    const edited = deleteRange(doc, 3, 8);
+    expect(edited.features).toEqual([]);
+    expect(undo(edited).features).toHaveLength(1);
+  });
+
+  it('flips with a reverse complement', () => {
+    const doc = docWith('ACGTACGTAC', [0, 4]);
+    const flipped = reverseComplementDoc(doc);
+    expect([flipped.features[0].start, flipped.features[0].end]).toEqual([6, 10]);
+    expect(flipped.features[0].strand).toBe(-1);
+    expect(undo(flipped).features[0].strand).toBe(1);
+  });
+
+  it('leaves features alone when a substitution does not move a base', () => {
+    const doc = docWith('ACGTACGTAC', [4, 8]);
+    const edited = substitute(doc, 5, 'T');
+    expect(edited.features).toBe(doc.features);
   });
 });
