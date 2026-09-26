@@ -24,6 +24,7 @@ import { createFeature, upsertFeature, removeFeature } from './annotations.js';
 import { DEFAULT_THEME } from './theme.js';
 import { DEFAULT_PALETTE, PALETTES } from './palettes.js';
 import { GAP_CHAR } from './iupac.js';
+import { PROJECT_FORMAT, serializeProject, deserializeProject } from './project.js';
 
 const STORAGE_KEY = 'geneEditor.workspace';
 const THEME_KEY = 'geneEditor.theme';
@@ -63,24 +64,6 @@ function loadPersistedTheme() {
     return DEFAULT_THEME;
   }
 }
-
-// Only names and sequences are persisted — undo history would balloon the payload
-// and is not meaningful across sessions.
-function loadPersistedDocuments() {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return [];
-    const parsed = JSON.parse(stored);
-    if (!Array.isArray(parsed?.documents)) return [];
-    return parsed.documents
-      .filter(d => typeof d?.raw === 'string')
-      .map(d => createDocument(d.name ?? '', d.raw));
-  } catch {
-    return [];
-  }
-}
-
-const initialDocuments = loadPersistedDocuments();
 
 // The view settings a freshly-opened file starts with — kept as one object so a
 // new file entry and the very first workspace can build from the same defaults.
@@ -134,10 +117,35 @@ function makeFileEntry(documents, name, viewSettings) {
   };
 }
 
+/**
+ * A file entry built from a file state read out of a project. Settings the app
+ * has gained since the project was saved take their defaults.
+ */
+function fileEntryFromState(state) {
+  return {
+    ...makeFileEntry(state.documents, state.name, DEFAULT_VIEW_SETTINGS),
+    ...state,
+    viewSettings: { ...DEFAULT_VIEW_SETTINGS, ...state.viewSettings, fullscreen: false },
+    minZoom: MIN_ZOOM,
+    renamingDocId: null,
+  };
+}
+
 /** The fields of `entry` that get spread onto the top level of `workspace`. */
 function fileFieldsOf(entry) {
   const { id, name, ...fields } = entry;
   return fields;
+}
+
+/** The top-level workspace fields while no file is open. */
+function emptyFileFields(viewSettings) {
+  return fileFieldsOf(makeFileEntry([], '', viewSettings));
+}
+
+/** Stats for a file's active sequence. */
+function statsFor({ documents = [], activeDocId }) {
+  const doc = documents.find(d => d.id === activeDocId);
+  return doc ? getStats(doc.raw) : EMPTY_STATS;
 }
 
 /** Package the currently active file's live top-level state back into an entry. */
@@ -163,9 +171,50 @@ function snapshotActiveFile(workspace) {
   };
 }
 
-const initialFile = initialDocuments.length > 0
-  ? makeFileEntry(initialDocuments, '', DEFAULT_VIEW_SETTINGS)
-  : null;
+/**
+ * Every open file, in panel order, with the active one's live state folded back
+ * in — the whole session, as a project saves it.
+ */
+export function currentFiles(workspace) {
+  return workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f));
+}
+
+/** The session as a project, ready to write out. */
+export function projectOf(workspace, options) {
+  const index = workspace.files.findIndex(f => f.id === workspace.activeFileId);
+  return serializeProject(currentFiles(workspace), index, options);
+}
+
+/**
+ * What Save left in browser storage: a project, or — from before projects
+ * existed — a bare list of names and sequences.
+ * @returns {{files: object[], activeIndex: number}}
+ */
+function loadPersistedFiles() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return { files: [], activeIndex: 0 };
+    const parsed = JSON.parse(stored);
+    if (parsed?.format === PROJECT_FORMAT) {
+      const { files, activeIndex } = deserializeProject(parsed);
+      return { files: files.map(fileEntryFromState), activeIndex };
+    }
+    const documents = Array.isArray(parsed?.documents)
+      ? parsed.documents
+          .filter(d => typeof d?.raw === 'string')
+          .map(d => createDocument(d.name ?? '', d.raw))
+      : [];
+    return {
+      files: documents.length > 0 ? [makeFileEntry(documents, '', DEFAULT_VIEW_SETTINGS)] : [],
+      activeIndex: 0,
+    };
+  } catch {
+    return { files: [], activeIndex: 0 };
+  }
+}
+
+const persisted = loadPersistedFiles();
+const initialFile = persisted.files[persisted.activeIndex] ?? null;
 
 let toastTimer = null;
 
@@ -259,6 +308,26 @@ const useStore = create((set, get) => {
     });
   }
 
+  /**
+   * The state change that puts `target` on screen, with `files` as the full
+   * list of open files; a null target leaves the workspace empty.
+   */
+  function activate(workspace, files, target, extra = {}) {
+    return {
+      workspace: {
+        ...workspace,
+        ...(target ? fileFieldsOf(target) : emptyFileFields(workspace.viewSettings)),
+        files,
+        activeFileId: target?.id ?? null,
+        fileName: target?.name ?? '',
+        dragInsertIndex: null,
+        rowDropIndex: null,
+        ...extra,
+      },
+      stats: target ? statsFor(target) : EMPTY_STATS,
+    };
+  }
+
   function patchViewSettings(patch) {
     const { workspace } = get();
     set({
@@ -272,38 +341,26 @@ const useStore = create((set, get) => {
       // The currently active one's state also lives at the top level of this
       // object (documents, activeDocId, viewSettings, ...); the rest sit here
       // until switched to.
-      files: initialFile ? [initialFile] : [],
+      files: persisted.files,
       activeFileId: initialFile?.id ?? null,
-      ...(initialFile
-        ? fileFieldsOf(initialFile)
-        : {
-            documents: [],
-            activeDocId: null,
-            editingEnabled: false,
-            minZoom: MIN_ZOOM,
-            hiddenDocIds: new Set(),
-            pinnedDocIds: new Set(),
-            groups: [],
-            selectedDocIds: new Set(),
-            lastSelectionClickId: null,
-            columnCursor: null,
-            columnSelection: null,
-            renamingDocId: null,
-            workspaceHistory: [],
-            workspaceFuture: [],
-            viewSettings: DEFAULT_VIEW_SETTINGS,
-          }),
+      ...(initialFile ? fileFieldsOf(initialFile) : emptyFileFields(DEFAULT_VIEW_SETTINGS)),
       // The file these documents came from, for the stats panel and the files
       // panel. FASTA names the sequences, not the set, so the file name is the
       // only name the set has.
       fileName: initialFile?.name ?? '',
       dragInsertIndex: null, // transient drag-to-move preview position
       rowDropIndex: null, // transient row-reorder drop line, as a visual row index
+      // Files opened or closed since the last Save. Edits are tracked on the
+      // documents themselves, as their `dirty` flag.
+      unsavedChanges: false,
     },
 
     theme: loadPersistedTheme(),
 
-    stats: initialDocuments[0] ? getStats(initialDocuments[0].raw) : EMPTY_STATS,
+    // Projects waiting on the "add or replace?" question, oldest first.
+    pendingProjects: [], // Array<{ project, fileName }>
+
+    stats: statsFor(initialFile ?? {}),
 
     toast: null, // { message, type: 'info' | 'warning' | 'error' } | null
 
@@ -336,116 +393,70 @@ const useStore = create((set, get) => {
     // Opens `records` as a new file alongside whatever is already open, and
     // switches to it — it does not replace the current file, only adds one.
     loadWorkspace: (records, fileName = '') => {
-      const documents = records.map(r => createDocument(r.name, r.sequence));
       const { workspace } = get();
+      const documents = records.map(r => createDocument(r.name, r.sequence));
       const newFile = makeFileEntry(documents, fileName, workspace.viewSettings);
-
-      const files = workspace.activeFileId
-        ? workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f))
-        : workspace.files;
-
-      set({
-        workspace: {
-          ...workspace,
-          files: [...files, newFile],
-          activeFileId: newFile.id,
-          fileName: newFile.name,
-          ...fileFieldsOf(newFile),
-          dragInsertIndex: null,
-          rowDropIndex: null,
-        },
-        stats: documents[0] ? getStats(documents[0].raw) : EMPTY_STATS,
-      });
+      set(activate(workspace, [...currentFiles(workspace), newFile], newFile, { unsavedChanges: true }));
     },
 
     /** Switch to an already-loaded file, saving the outgoing one's live state first. */
     switchFile: (fileId) => {
       const { workspace } = get();
       if (workspace.activeFileId === fileId) return;
-
-      const files = workspace.activeFileId
-        ? workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f))
-        : workspace.files;
+      const files = currentFiles(workspace);
       const target = files.find(f => f.id === fileId);
       if (!target) return;
-
-      set({
-        workspace: {
-          ...workspace,
-          files,
-          activeFileId: target.id,
-          fileName: target.name,
-          ...fileFieldsOf(target),
-          dragInsertIndex: null,
-          rowDropIndex: null,
-        },
-        stats: target.documents.find(d => d.id === target.activeDocId)
-          ? getStats(target.documents.find(d => d.id === target.activeDocId).raw)
-          : EMPTY_STATS,
-      });
+      set(activate(workspace, files, target));
     },
 
     /** Close a loaded file. Closing the active one switches to another, if any remain. */
     closeFile: (fileId) => {
       const { workspace } = get();
       if (!workspace.files.some(f => f.id === fileId)) return;
-      const closingActive = workspace.activeFileId === fileId;
+      const survivors = currentFiles(workspace).filter(f => f.id !== fileId);
 
-      const survivors = (closingActive
-        ? workspace.files
-        : workspace.files.map(f => (f.id === workspace.activeFileId ? snapshotActiveFile(workspace) : f))
-      ).filter(f => f.id !== fileId);
-
-      if (!closingActive) {
-        set({ workspace: { ...workspace, files: survivors } });
+      if (workspace.activeFileId !== fileId) {
+        set({ workspace: { ...workspace, files: survivors, unsavedChanges: true } });
         return;
       }
+      set(activate(workspace, survivors, survivors[0] ?? null, { unsavedChanges: true }));
+    },
 
-      if (survivors.length === 0) {
-        set({
-          workspace: {
-            ...workspace,
-            files: [],
-            activeFileId: null,
-            fileName: '',
-            documents: [],
-            activeDocId: null,
-            editingEnabled: false,
-            minZoom: MIN_ZOOM,
-            hiddenDocIds: new Set(),
-            pinnedDocIds: new Set(),
-            groups: [],
-            selectedDocIds: new Set(),
-            lastSelectionClickId: null,
-            columnCursor: null,
-            columnSelection: null,
-            renamingDocId: null,
-            workspaceHistory: [],
-            workspaceFuture: [],
-            viewSettings: { ...workspace.viewSettings, referenceDocId: null },
-            dragInsertIndex: null,
-            rowDropIndex: null,
-          },
-          stats: EMPTY_STATS,
-        });
+    /**
+     * Open a project read from a .gene file, either in place of everything
+     * that is open or alongside it; the project's own active file comes to front.
+     * @param {{files: object[], activeIndex: number}} project - from deserializeProject
+     * @param {'replace'|'add'} mode
+     */
+    openProject: (project, mode = 'replace', fileName = '') => {
+      const { workspace } = get();
+      const entries = project.files.map(fileEntryFromState);
+      const target = entries[project.activeIndex] ?? entries[0];
+      const kept = mode === 'add' ? currentFiles(workspace) : [];
+      set(activate(workspace, [...kept, ...entries], target, { unsavedChanges: true }));
+      const count = `${entries.length} file${entries.length === 1 ? '' : 's'}`;
+      get().showToast(fileName ? `Opened "${fileName}" — ${count}` : `Opened project — ${count}`, 'info');
+    },
+
+    /**
+     * Open a project, asking first whether it joins or replaces the open files
+     * — unless nothing is open, when there is nothing to ask about.
+     */
+    requestOpenProject: (project, fileName = '') => {
+      const { workspace, pendingProjects } = get();
+      if (workspace.files.length === 0 && pendingProjects.length === 0) {
+        get().openProject(project, 'replace', fileName);
         return;
       }
+      set({ pendingProjects: [...pendingProjects, { project, fileName }] });
+    },
 
-      const next = survivors[0];
-      set({
-        workspace: {
-          ...workspace,
-          files: survivors,
-          activeFileId: next.id,
-          fileName: next.name,
-          ...fileFieldsOf(next),
-          dragInsertIndex: null,
-          rowDropIndex: null,
-        },
-        stats: next.documents.find(d => d.id === next.activeDocId)
-          ? getStats(next.documents.find(d => d.id === next.activeDocId).raw)
-          : EMPTY_STATS,
-      });
+    /** Answer the open-project question: 'add', 'replace' or 'cancel'. */
+    resolvePendingProject: (choice) => {
+      const [first, ...rest] = get().pendingProjects;
+      if (!first) return;
+      set({ pendingProjects: rest });
+      if (choice === 'add' || choice === 'replace') get().openProject(first.project, choice, first.fileName);
     },
 
     setActiveDoc: (id) => {
@@ -459,24 +470,41 @@ const useStore = create((set, get) => {
       });
     },
 
+    /**
+     * Keep the whole session — every open file, with its recent undo history —
+     * in browser storage, as the same project a .gene file holds. If that is
+     * too big for the browser's quota, the history is the part let go.
+     */
     save: () => {
       const { workspace } = get();
-      const payload = {
-        documents: workspace.documents.map(d => ({ name: d.name, raw: d.raw })),
-      };
+      const write = options => localStorage.setItem(STORAGE_KEY, JSON.stringify(projectOf(workspace, options)));
+      let withoutHistory = false;
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        if (workspace.files.length === 0) localStorage.removeItem(STORAGE_KEY);
+        else write();
       } catch {
-        get().showToast('Could not save — sequences exceed available storage', 'error');
-        return;
+        try {
+          write({ includeHistory: false });
+          withoutHistory = true;
+        } catch {
+          get().showToast('Could not save — the sequences exceed the browser\'s storage', 'error');
+          return;
+        }
       }
+
+      const clean = docs => (docs.some(d => d.dirty) ? docs.map(d => (d.dirty ? { ...d, dirty: false } : d)) : docs);
       set({
         workspace: {
           ...workspace,
-          documents: workspace.documents.map(d => (d.dirty ? { ...d, dirty: false } : d)),
+          documents: clean(workspace.documents),
+          files: workspace.files.map(f => (f.id === workspace.activeFileId ? f : { ...f, documents: clean(f.documents) })),
+          unsavedChanges: false,
         },
       });
-      get().showToast('Saved', 'info');
+      get().showToast(
+        withoutHistory ? 'Saved — without undo history, which is too large for browser storage' : 'Saved',
+        withoutHistory ? 'warning' : 'info'
+      );
     },
 
     // --- Editing (all target the active document) ---
@@ -911,7 +939,7 @@ const useStore = create((set, get) => {
       set({ workspace: { ...workspace, documents, renamingDocId: null } });
     },
 
-    // --- Row (whole-sequence) multi-select, for deletion ---
+    // --- Row (whole-sequence) multi-select ---
 
     toggleDocSelection: (id) => {
       const { workspace } = get();

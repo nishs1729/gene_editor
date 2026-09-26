@@ -3,14 +3,15 @@
 // (zoom, palette, tracks) lives in the status bar instead, in SelectionReadout.
 
 import { useRef, useState } from 'react';
-import useStore, { getActiveDoc } from './store.js';
-import { parseFasta, toFasta } from './fasta.js';
+import useStore, { getActiveDoc, currentFiles, projectOf } from './store.js';
 import ToolbarMenu, { MenuItem, MenuToggle, MenuSection } from './ToolbarMenu.jsx';
 import { TRANSFORMS } from './sequenceModel.js';
 import {
-  buildAlignmentSvg, buildVariantCsv, downloadBlob, downloadText, figureColumns, renderPng,
+  downloadBlob, downloadText, fastaFor, modifiedFileName, projectFileName, selectionFileName,
 } from './exporters.js';
-import { getCanvasApi } from './canvasBridge.js';
+import { encodeProject } from './project.js';
+import { createZip } from './zip.js';
+import { openFiles, OPEN_ACCEPT } from './openFiles.js';
 import { MIN_TREE_SEQUENCES } from './phylogenetics.js';
 
 // Matches the percentages Geneious offers on its own consensus threshold control.
@@ -30,12 +31,6 @@ const TRANSFORM_SCOPES = [
   { id: 'span', label: 'Selected span' },
 ];
 
-/** Sequence names are free text; a download filename is not. */
-function safeFileName(name) {
-  const cleaned = (name || '').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
-  return cleaned || 'sequence';
-}
-
 export default function Toolbar() {
   const fileInputRef = useRef(null);
   const [trimCoverage, setTrimCoverage] = useState(70);
@@ -44,7 +39,6 @@ export default function Toolbar() {
   const workspace = useStore(s => s.workspace);
   const theme = useStore(s => s.theme);
   const activeDoc = useStore(getActiveDoc);
-  const loadWorkspace = useStore(s => s.loadWorkspace);
   const undoAction = useStore(s => s.undo);
   const redoAction = useStore(s => s.redo);
   const toggleComplement = useStore(s => s.toggleComplement);
@@ -56,7 +50,6 @@ export default function Toolbar() {
   const setHighlightMode = useStore(s => s.setHighlightMode);
   const save = useStore(s => s.save);
   const showToast = useStore(s => s.showToast);
-  const deleteSelectedDocs = useStore(s => s.deleteSelectedDocs);
 
   const toggleReferenceDoc = useStore(s => s.toggleReferenceDoc);
   const sortDocs = useStore(s => s.sortDocs);
@@ -73,7 +66,7 @@ export default function Toolbar() {
 
   const { editingEnabled, viewSettings, selectedDocIds } = workspace;
   const hasSequence = (activeDoc?.raw.length ?? 0) > 0;
-  const hasExportable = workspace.documents.some(d => d.raw.length > 0);
+  const hasFiles = workspace.files.length > 0;
   // The reference is a single sequence, so the button only acts on an unambiguous
   // selection of one.
   const singleSelectedId = selectedDocIds.size === 1 ? [...selectedDocIds][0] : null;
@@ -82,122 +75,59 @@ export default function Toolbar() {
     || (editingEnabled && (activeDoc?.history.length ?? 0) > 0);
   const canRedo = workspace.workspaceFuture.length > 0
     || (editingEnabled && (activeDoc?.future.length ?? 0) > 0);
-  const isDirty = workspace.documents.some(d => d.dirty);
+  // Save covers every open file, so any of them having changed counts.
+  const isDirty = workspace.unsavedChanges
+    || currentFiles(workspace).some(f => f.documents.some(d => d.dirty));
   const isStacked = workspace.documents.length > 1;
   const selectedCount = selectedDocIds.size;
 
-  function handleFileLoad(e) {
-    const files = [...(e.target.files ?? [])];
-    if (files.length === 0) return;
-
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const records = parseFasta(ev.target.result).filter(r => r.sequence.length > 0);
-        if (records.length === 0) {
-          showToast(`No valid sequences found in "${file.name}"`, 'error');
-          return;
-        }
-        loadWorkspace(records, file.name);
-        showToast(
-          records.length === 1
-            ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
-            : `Loaded ${records.length} sequences from "${file.name}"`,
-          'info'
-        );
-      };
-      reader.readAsText(file);
-    });
-    e.target.value = ''; // allow re-loading the same file(s)
+  function handleOpen(e) {
+    openFiles([...(e.target.files ?? [])]);
+    e.target.value = ''; // allow opening the same file again
   }
 
-  /** Exports the selected sequences, or every sequence when none are selected. */
-  function handleExport() {
-    const { documents } = workspace;
-    const targets = (selectedDocIds.size > 0
-      ? documents.filter(d => selectedDocIds.has(d.id))
-      : documents
-    ).filter(d => d.raw.length > 0);
-
-    if (targets.length === 0) {
+  function exportFasta(fileName, documents, label) {
+    const text = fastaFor(documents);
+    if (!text) {
       showToast('No sequences to export', 'warning');
       return;
     }
-
-    const text = targets.map(d => toFasta(d.name || 'sequence', d.raw)).join('');
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = targets.length === 1 ? `${safeFileName(targets[0].name)}.fasta` : 'sequences.fasta';
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast(
-      targets.length === 1
-        ? `Exported "${targets[0].name || 'sequence'}"`
-        : `Exported ${targets.length} sequences`,
-      'info'
-    );
+    downloadText(fileName, text);
+    showToast(`Exported ${label} as ${fileName}`, 'info');
   }
 
-  /** The state the exporters draw from: whatever the canvas is showing now. */
-  function figureContext() {
-    const api = getCanvasApi();
-    const renderer = api?.getRenderer();
-    if (!renderer) {
-      showToast('The canvas is not ready yet', 'warning');
-      return null;
+  async function handleExportProject() {
+    const files = currentFiles(workspace);
+    try {
+      const blob = await encodeProject(projectOf(workspace));
+      const fileName = projectFileName(files.map(f => f.name));
+      downloadBlob(fileName, blob);
+      showToast(`Exported the project as ${fileName}`, 'info');
+    } catch {
+      showToast('Could not write the project file', 'error');
     }
-    const state = { ...workspace, find: useStore.getState().find };
-    return { renderer, state, scroll: api.getScroll() };
   }
 
-  function handleSvgExport() {
-    const context = figureContext();
-    if (!context) return;
-    const { renderer, state, scroll } = context;
-    const { from, to } = figureColumns(state, scroll, renderer);
-    if (to <= from) {
-      showToast('Nothing in view to export', 'warning');
+  function handleExportFile() {
+    exportFasta(modifiedFileName(workspace.fileName), workspace.documents, 'this file');
+  }
+
+  function handleExportSelected() {
+    const selected = workspace.documents.filter(d => selectedDocIds.has(d.id));
+    const label = `${selected.length} sequence${selected.length === 1 ? '' : 's'}`;
+    exportFasta(selectionFileName(workspace.fileName, selected), selected, label);
+  }
+
+  function handleExportAllFiles() {
+    const entries = currentFiles(workspace)
+      .map(f => ({ name: modifiedFileName(f.name), data: fastaFor(f.documents) }))
+      .filter(e => e.data);
+    if (entries.length === 0) {
+      showToast('No sequences to export', 'warning');
       return;
     }
-    const svg = buildAlignmentSvg(state, {
-      from,
-      to,
-      title: `Alignment ${from + 1}–${to}`,
-      theme,
-      includeConsensus: viewSettings.showConsensus,
-    });
-    downloadText('alignment.svg', svg, 'image/svg+xml');
-    showToast(`Exported columns ${from + 1}–${to} as SVG`, 'info');
-  }
-
-  async function handlePngExport(scale) {
-    const context = figureContext();
-    if (!context) return;
-    const { renderer, state, scroll } = context;
-    const stamp = new Date().toISOString().slice(0, 10);
-    const maxLen = workspace.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
-    const blob = await renderPng(renderer, state, scroll, {
-      scale,
-      theme,
-      header: `${workspace.documents.length} sequences · ${maxLen.toLocaleString()} columns · ${stamp}`,
-    });
-    if (!blob) {
-      showToast('Could not render the image', 'error');
-      return;
-    }
-    downloadBlob(`alignment@${scale}x.png`, blob);
-    showToast(`Exported PNG at ${scale}× resolution`, 'info');
-  }
-
-  function handleVariantExport() {
-    const reference = workspace.documents.find(d => d.id === viewSettings.referenceDocId);
-    if (!reference) return;
-    const csv = buildVariantCsv(workspace.documents, reference);
-    const lines = csv.split('\n').length - 1;
-    downloadText('variants.csv', csv, 'text/csv;charset=utf-8');
-    showToast(`Exported ${lines} variant${lines === 1 ? '' : 's'}`, 'info');
+    downloadBlob('all_files_modified.zip', new Blob([createZip(entries)], { type: 'application/zip' }));
+    showToast(`Exported ${entries.length} file${entries.length === 1 ? '' : 's'} as all_files_modified.zip`, 'info');
   }
 
   /** Cleanup and transform operations rewrite sequence data, so they respect the lock. */
@@ -217,65 +147,64 @@ export default function Toolbar() {
         <button
           className="toolbar-btn toolbar-btn-primary"
           onClick={() => fileInputRef.current?.click()}
-          title="Load one or more FASTA files"
+          title="Open FASTA files, or a .gene project (you can also drop them on the window)"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M2 14h12M8 2v9M4 7l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" transform="rotate(180 8 8)"/>
           </svg>
-          Load FASTA
+          Open
         </button>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".fasta,.fa,.fna,.fas,.aln,.txt"
-          onChange={handleFileLoad}
+          accept={OPEN_ACCEPT}
+          onChange={handleOpen}
           multiple
           style={{ display: 'none' }}
         />
 
-        <ToolbarMenu
-          label={`Export${selectedCount > 0 ? ` (${selectedCount})` : ''}`}
-          title="Sequences, figures and reports"
-          disabled={!hasExportable}
-        >
+        <ToolbarMenu label="Export" title="Save your work to files" disabled={!hasFiles}>
           {close => (
             <>
-              <MenuSection>Sequences</MenuSection>
               <MenuItem
-                onClick={() => { handleExport(); close(); }}
-                title="The selected sequences, or all of them when none are selected"
+                onClick={() => { handleExportProject(); close(); }}
+                title="Everything that's open (all files, edits, undo history and view settings) in one .gene file you can reopen on any machine"
               >
-                FASTA{selectedCount > 0 ? ` (${selectedCount} selected)` : ' (all)'}
+                Project (.gene)
               </MenuItem>
 
-              <MenuSection>Figures</MenuSection>
+              <MenuSection>FASTA</MenuSection>
               <MenuItem
-                onClick={() => { handleSvgExport(); close(); }}
-                title="Vector figure of the selected span, or of the columns in view"
+                onClick={() => { handleExportFile(); close(); }}
+                title={`The sequences of the file on screen, saved as ${modifiedFileName(workspace.fileName)}`}
               >
-                Vector SVG
+                This file
               </MenuItem>
-              {[2, 3, 4].map(scale => (
-                <MenuItem key={scale} onClick={() => { handlePngExport(scale); close(); }}>
-                  PNG at {scale}× resolution
-                </MenuItem>
-              ))}
-
-              <MenuSection>Reports</MenuSection>
               <MenuItem
-                onClick={() => { handleVariantExport(); close(); }}
-                disabled={!hasReference}
-                title={hasReference
-                  ? 'Every difference from the reference sequence'
-                  : 'Set a reference sequence first'}
+                onClick={() => { handleExportSelected(); close(); }}
+                disabled={selectedCount === 0}
+                title={selectedCount === 0
+                  ? 'Select sequences first: click a name, Ctrl+click to add more'
+                  : 'Only the selected sequences, as a single FASTA file'}
               >
-                Variant report (CSV)
+                Selected sequences{selectedCount > 0 ? ` (${selectedCount})` : ''}
+              </MenuItem>
+              <MenuItem
+                onClick={() => { handleExportAllFiles(); close(); }}
+                title="Every open file, each saved as its own <name>_modified FASTA, together in one .zip"
+              >
+                All files (.zip)
               </MenuItem>
             </>
           )}
         </ToolbarMenu>
 
-        <button className="toolbar-btn" onClick={save} disabled={!isDirty} title="Save the workspace (Ctrl+S)">
+        <button
+          className="toolbar-btn"
+          onClick={save}
+          disabled={!hasFiles && !isDirty}
+          title="Keep every open file, with its undo history, in this browser for next time (Ctrl+S)"
+        >
           Save{isDirty ? ' •' : ''}
         </button>
       </div>
@@ -336,18 +265,6 @@ export default function Toolbar() {
                 Add as Reference
               </button>
             )}
-
-            <button
-              className="toolbar-btn"
-              onClick={deleteSelectedDocs}
-              disabled={selectedCount === 0}
-              title="Delete the selected sequences from this workspace (click a name to select, Ctrl+click to add more)"
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.5 9.5a1 1 0 0 0 1 .95h4a1 1 0 0 0 1-.95l.5-9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              Delete{selectedCount > 0 ? ` (${selectedCount})` : ''}
-            </button>
 
             <ToolbarMenu label="Organise" title="Order, group and hide sequences">
               {close => (

@@ -206,39 +206,3 @@ export function summarizeGroup(documents, options = {}) {
       : null,
   };
 }
-
-/**
- * Variants of every sequence against a reference, by alignment column.
- * A gap in the reference where a sequence has a base is an insertion; a base in
- * the reference where a sequence has a gap is a deletion; anything else that
- * differs is a substitution.
- * @param {Array<{id: string, name: string, raw: string}>} documents
- * @param {object} reference - the document to compare against
- * @returns {Array<{position: number, referenceBase: string, name: string, observed: string, type: string, conservation: number}>}
- */
-export function findVariants(documents, reference) {
-  if (!reference) return [];
-  const others = documents.filter(d => d.id !== reference.id);
-  const out = [];
-
-  for (const doc of others) {
-    const len = Math.max(doc.raw.length, reference.raw.length);
-    for (let col = 0; col < len; col++) {
-      const ref = reference.raw[col] ?? GAP_CHAR;
-      const obs = doc.raw[col] ?? GAP_CHAR;
-      if (ref === obs) continue;
-
-      const type = ref === GAP_CHAR ? 'Insertion' : obs === GAP_CHAR ? 'Deletion' : 'SNP';
-      out.push({
-        position: col + 1,
-        referenceBase: ref,
-        name: doc.name || 'Unnamed',
-        observed: obs,
-        type,
-        conservation: Math.round(conservationScore(documents, col).score * 1000) / 10,
-      });
-    }
-  }
-
-  return out.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-}

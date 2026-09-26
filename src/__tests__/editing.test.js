@@ -32,6 +32,7 @@ function makeStore() {
     setCursorPos: vi.fn(),
     setColumnCursor: vi.fn(),
     startRename: vi.fn(),
+    deleteSelectedDocs: vi.fn(),
     substituteColumn: vi.fn(),
     insertColumn: vi.fn(),
     deleteColumn: vi.fn(),
@@ -450,5 +451,53 @@ describe('renaming', () => {
     onKeyDown(key('F2'));
     expect(store.startRename).toHaveBeenCalledWith(doc.id);
     expect(store.insertColumn).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleting selected sequences', () => {
+  function withSelectedRows(opts = {}) {
+    setup(opts);
+    context.state.selectedDocIds = new Set([context.state.documents[1].id]);
+  }
+
+  it('deletes the selected rows on Delete', () => {
+    withSelectedRows();
+    const e = key('Delete');
+    onKeyDown(e);
+    expect(store.deleteSelectedDocs).toHaveBeenCalledTimes(1);
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  it('deletes the rows, not a base at the cursor, while rows are selected', () => {
+    withSelectedRows();
+    onKeyDown(key('Delete'));
+    expect(store.deleteRange).not.toHaveBeenCalled();
+  });
+
+  it('still deletes a base when no row is selected', () => {
+    setup();
+    context.state.selectedDocIds = new Set();
+    onKeyDown(key('Delete'));
+    expect(store.deleteSelectedDocs).not.toHaveBeenCalled();
+    expect(store.deleteRange).toHaveBeenCalledWith(3, 4);
+  });
+
+  it('respects the edit lock', () => {
+    withSelectedRows({ editingEnabled: false });
+    onKeyDown(key('Delete'));
+    expect(store.deleteSelectedDocs).not.toHaveBeenCalled();
+    expect(store.showToast).toHaveBeenCalledWith(expect.stringMatching(/Allow Editing/), 'warning');
+  });
+
+  it('leaves Backspace to the bases, so editing never removes a row by accident', () => {
+    withSelectedRows();
+    onKeyDown(key('Backspace'));
+    expect(store.deleteSelectedDocs).not.toHaveBeenCalled();
+  });
+
+  it('leaves Alt+Delete (delete in place) alone', () => {
+    withSelectedRows();
+    onKeyDown(key('Delete', { altKey: true }));
+    expect(store.deleteSelectedDocs).not.toHaveBeenCalled();
   });
 });

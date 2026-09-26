@@ -441,7 +441,7 @@ export class CanvasRenderer {
       ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Load a FASTA file to begin', this.width / 2, this.height / 2);
+      ctx.fillText('Open a FASTA file or a .gene project to begin', this.width / 2, this.height / 2);
       ctx.textAlign = 'left';
       return;
     }

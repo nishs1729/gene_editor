@@ -87,6 +87,18 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       return;
     }
 
+    // --- Delete selected sequences ---
+    // Selected rows win over the base cursor: clicking into the bases clears a
+    // row selection, so while one stands, Delete can only mean the rows. It is
+    // held to the edit lock like every other change made from the keyboard,
+    // which also keeps the Ctrl+Z that undoes it available straight away.
+    if (e.key === 'Delete' && !mod && !e.altKey && (state.selectedDocIds?.size ?? 0) > 0) {
+      e.preventDefault();
+      if (editingEnabled) store.deleteSelectedDocs();
+      else store.showToast('Click "Allow Editing" to delete sequences', 'warning');
+      return;
+    }
+
     // Column-selection mode: a range of columns selected by ruler drag across all rows.
     if (state.columnSelection) {
       const { start, end } = state.columnSelection;

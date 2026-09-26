@@ -573,7 +573,7 @@ body {
 }
 
 .app-drop-active .canvas-area::after {
-  content: 'Drop a FASTA file to open it';
+  content: 'Drop FASTA files or a .gene project to open them';
   position: absolute;
   inset: 8px;
   z-index: 40;
@@ -851,8 +851,20 @@ body {
 
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.modal-text {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.modal-warning {
+  color: var(--warning);
 }
 
 /* ===== Large modals (guide, distance matrix) ===== */

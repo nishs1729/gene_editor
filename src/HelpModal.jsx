@@ -41,6 +41,7 @@ const SHORTCUTS = [
       [['Alt', 'Backspace'], null, 'Replace with a gap instead of closing the column up'],
       [['Ctrl', 'C/X/V'], null, 'Copy, cut, paste'],
       [['F2'], null, 'Rename the focused or selected sequence'],
+      [['Delete'], null, 'With sequences selected by name, delete those sequences'],
     ],
   },
   {
@@ -136,17 +137,21 @@ export default function HelpModal() {
                 names in the left gutter, under a shared ruler. Drag the divider at the right of the
                 gutter to give the names more or less room.
               </p>
-              <h3>Loading sequences</h3>
+              <h3>Opening files</h3>
               <p>
-                Use <strong>Load FASTA</strong>, or drop a <code>.fasta</code>, <code>.fa</code>,
-                <code>.fna</code>, <code>.aln</code> or <code>.txt</code> file anywhere on the window.
+                Use <strong>Open</strong>, or drop files anywhere on the window: <code>.fasta</code>,
+                <code>.fa</code>, <code>.fna</code>, <code>.aln</code> and <code>.txt</code> open as
+                sequence files, and a <code>.gene</code> file opens as the project it holds. Several
+                files can be open at once; switch between them in the <strong>Files</strong> panel.
                 Lower-case bases are uppercased and <code>.</code> gaps become <code>-</code> on the way in.
               </p>
-              <h3>Exporting</h3>
+              <h3>Saving and exporting</h3>
               <p>
-                <strong>Export ▾</strong> writes FASTA for the selected sequences — or for all of them
-                when nothing is selected — and also produces publication SVG and PNG figures and a
-                variant report against the reference.
+                <strong>Save</strong> keeps every open file, with its recent undo history, in this
+                browser for next time. <strong>Export ▾</strong> writes files to take elsewhere:
+                a <strong>Project (.gene)</strong> with everything that's open, to carry on from on any
+                machine; the file on screen, the selected sequences, or all open files as FASTA.
+                Exported files are named after the originals with <code>_modified</code> added.
               </p>
               <h3>Theme, palette and fullscreen</h3>
               <p>
@@ -222,7 +227,8 @@ export default function HelpModal() {
               </p>
               <h3>Managing tracks</h3>
               <p>
-                Double-click a name or press <kbd>F2</kbd> to rename. Drag names to reorder, or use
+                Double-click a name or press <kbd>F2</kbd> to rename. Click a name (Ctrl+click for more)
+                and press <kbd>Delete</kbd> to delete sequences. Drag names to reorder, or use
                 <strong> Organise ▾</strong> to sort by name, length or similarity to the reference and
                 to group sequences under a collapsible header. The eye and pin icons on a gutter row
                 hide a track or stick it to the top.

@@ -15,7 +15,8 @@ import DistanceMatrixModal from './DistanceMatrixModal.jsx';
 import TreeModal from './TreeModal.jsx';
 import AnnotationDialog from './AnnotationDialog.jsx';
 import Toast from './Toast.jsx';
-import { parseFasta } from './fasta.js';
+import { openFiles } from './openFiles.js';
+import OpenProjectDialog from './OpenProjectDialog.jsx';
 import { ZOOM_STEP } from './ZoomControls.jsx';
 
 /** Keystrokes aimed at a form field are that field's, not the editor's. */
@@ -90,33 +91,11 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [fullscreen, toggleFullscreen]);
 
-  // Dropping one or more FASTA files anywhere on the window opens each as its
-  // own file, switching to whichever one happens to finish reading last.
+  // Dropping FASTA files or a .gene project anywhere on the window opens them.
   function handleDrop(e) {
     e.preventDefault();
     setDropActive(false);
-    const files = [...(e.dataTransfer?.files ?? [])];
-    if (files.length === 0) return;
-
-    const store = useStore.getState();
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = ev => {
-        const records = parseFasta(ev.target.result).filter(r => r.sequence.length > 0);
-        if (records.length === 0) {
-          store.showToast(`No valid sequences found in "${file.name}"`, 'error');
-          return;
-        }
-        store.loadWorkspace(records, file.name);
-        store.showToast(
-          records.length === 1
-            ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
-            : `Loaded ${records.length} sequences from "${file.name}"`,
-          'info'
-        );
-      };
-      reader.readAsText(file);
-    });
+    openFiles([...(e.dataTransfer?.files ?? [])]);
   }
 
   return (
@@ -144,6 +123,7 @@ export default function App() {
           options live, and losing them is worse than losing 30px of canvas. */}
       <SelectionReadout />
       <RenameDialog />
+      <OpenProjectDialog />
       <HelpModal />
       <JumpDialog />
       <DistanceMatrixModal />

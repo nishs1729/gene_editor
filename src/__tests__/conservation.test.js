@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   conservationScore, conservationTrack, comparePair, percentIdentity, summarizeGroup,
-  distanceMatrix, findVariants,
+  distanceMatrix,
 } from '../conservation.js';
 
 describe('percentIdentity', () => {
@@ -106,49 +106,6 @@ describe('distanceMatrix', () => {
     expect(identity[0][1]).toBe(75);
     expect(differences[0][1]).toBe(1);
     expect(identity[0][2]).toBe(100);
-  });
-});
-
-describe('findVariants', () => {
-  const reference = doc('ref', 'ACGT');
-
-  it('reports a substitution against the reference', () => {
-    const variants = findVariants([reference, doc('s1', 'ACGA')], reference);
-    expect(variants).toHaveLength(1);
-    expect(variants[0]).toMatchObject({
-      position: 4, referenceBase: 'T', observed: 'A', type: 'SNP', name: 's1',
-    });
-  });
-
-  it('calls a gap in the sequence a deletion and a gap in the reference an insertion', () => {
-    const deletion = findVariants([reference, doc('s1', 'AC-T')], reference);
-    expect(deletion[0]).toMatchObject({ position: 3, type: 'Deletion' });
-
-    const gappedRef = doc('ref', 'AC-T');
-    const insertion = findVariants([gappedRef, doc('s1', 'ACGT')], gappedRef);
-    expect(insertion[0]).toMatchObject({ position: 3, type: 'Insertion' });
-  });
-
-  it('treats the tail of a longer sequence as an insertion', () => {
-    const variants = findVariants([reference, doc('s1', 'ACGTAA')], reference);
-    expect(variants.map(v => v.position)).toEqual([5, 6]);
-    expect(variants.every(v => v.type === 'Insertion')).toBe(true);
-  });
-
-  it('says nothing about the reference itself, or about an identical sequence', () => {
-    expect(findVariants([reference, doc('s1', 'ACGT')], reference)).toEqual([]);
-  });
-
-  it('returns nothing without a reference', () => {
-    expect(findVariants([reference], null)).toEqual([]);
-  });
-
-  it('sorts by position so the report reads along the alignment', () => {
-    const variants = findVariants(
-      [reference, doc('s1', 'AAGT'), doc('s2', 'ACGA')],
-      reference
-    );
-    expect(variants.map(v => v.position)).toEqual([2, 4]);
   });
 });
 

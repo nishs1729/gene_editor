@@ -15,8 +15,11 @@ function makeLocalStorage() {
 const storage = makeLocalStorage();
 vi.stubGlobal('localStorage', storage);
 
-const { default: useStore, getActiveDoc, MIN_ZOOM, MAX_ZOOM, MIN_GUTTER_WIDTH, MAX_GUTTER_WIDTH } =
-  await import('../store.js');
+const {
+  default: useStore, getActiveDoc, currentFiles, projectOf,
+  MIN_ZOOM, MAX_ZOOM, MIN_GUTTER_WIDTH, MAX_GUTTER_WIDTH,
+} = await import('../store.js');
+const { PROJECT_FORMAT, deserializeProject } = await import('../project.js');
 
 const RECORDS = [
   { name: 'alpha', sequence: 'ACGTACGT' },
@@ -31,6 +34,8 @@ const ids = () => docs().map(d => d.id);
 
 beforeEach(() => {
   storage.clear();
+  // loadWorkspace adds a file rather than replacing one, so start from none.
+  useStore.setState(s => ({ workspace: { ...s.workspace, files: [], activeFileId: null }, pendingProjects: [] }));
   get().loadWorkspace(RECORDS);
   // loadWorkspace deliberately preserves view settings, so reset them explicitly.
   useStore.setState(s => ({
@@ -344,7 +349,7 @@ describe('renaming', () => {
     get().renameDoc(ids()[1], 'beta v2');
     get().save();
     const saved = JSON.parse(storage.getItem('geneEditor.workspace'));
-    expect(saved.documents[1].name).toBe('beta v2');
+    expect(saved.files[0].documents[1].name).toBe('beta v2');
   });
 });
 
@@ -707,14 +712,18 @@ describe('active-document editing', () => {
 });
 
 describe('save', () => {
-  it('persists only names and sequences', () => {
+  const stored = () => JSON.parse(storage.getItem('geneEditor.workspace'));
+
+  it('keeps every open file, as a project', () => {
+    get().loadWorkspace([{ name: 'solo', sequence: 'GGCC' }], 'second.fasta');
     get().save();
-    const stored = JSON.parse(storage.getItem('geneEditor.workspace'));
-    expect(stored.documents).toEqual([
-      { name: 'alpha', raw: 'ACGTACGT' },
-      { name: 'beta', raw: 'ACGTACGT' },
-      { name: 'gamma', raw: 'ACGTTCGT' },
+    expect(stored().format).toBe(PROJECT_FORMAT);
+    expect(stored().files.map(f => f.documents.map(d => d.raw))).toEqual([
+      ['ACGTACGT', 'ACGTACGT', 'ACGTTCGT'],
+      ['GGCC'],
     ]);
+    expect(stored().files[1].name).toBe('second.fasta');
+    expect(stored().activeFileIndex).toBe(1);
   });
 
   it('clears the dirty flags it just wrote out', () => {
@@ -722,6 +731,114 @@ describe('save', () => {
     expect(docs().some(d => d.dirty)).toBe(true);
     get().save();
     expect(docs().some(d => d.dirty)).toBe(false);
+  });
+
+  it('clears the dirty flags of files that are not on screen, too', () => {
+    get().substitute(0, 'T');
+    const firstId = ws().activeFileId;
+    get().loadWorkspace(RECORDS, 'other.fasta');
+    get().save();
+    get().switchFile(firstId);
+    expect(docs().some(d => d.dirty)).toBe(false);
+  });
+
+  it('keeps undo history, so a reopened session can still undo', () => {
+    get().toggleEditingEnabled();
+    get().substitute(0, 'T');
+    get().save();
+    get().openProject(deserializeProject(stored()), 'replace');
+    expect(docs()[0].raw).toBe('TCGTACGT');
+    get().undo();
+    expect(docs()[0].raw).toBe('ACGTACGT');
+  });
+
+  it('lets the history go when the session is too big for browser storage', () => {
+    get().substitute(0, 'T');
+    const setItem = storage.setItem;
+    let calls = 0;
+    storage.setItem = (k, v) => {
+      if (calls++ === 0) throw new Error('QuotaExceededError');
+      setItem(k, v);
+    };
+    try {
+      get().save();
+    } finally {
+      storage.setItem = setItem;
+    }
+    expect(stored().files[0].documents[0].raw).toBe('TCGTACGT');
+    expect(stored().files[0].workspaceHistory).toEqual([]);
+    expect(get().toast.type).toBe('warning');
+  });
+
+  it('forgets the saved session once everything has been closed and saved', () => {
+    get().save();
+    get().closeFile(ws().activeFileId);
+    get().save();
+    expect(storage.getItem('geneEditor.workspace')).toBeNull();
+  });
+
+  it('marks opening and closing files as unsaved, and saving as saved', () => {
+    expect(ws().unsavedChanges).toBe(true);
+    get().save();
+    expect(ws().unsavedChanges).toBe(false);
+    get().loadWorkspace(RECORDS, 'more.fasta');
+    expect(ws().unsavedChanges).toBe(true);
+  });
+});
+
+describe('opening a project', () => {
+  function project() {
+    get().loadWorkspace([{ name: 'p1', sequence: 'AAAA' }], 'proj.fasta');
+    const saved = projectOf(ws());
+    return deserializeProject(JSON.parse(JSON.stringify(saved)));
+  }
+
+  it('opens straight away when nothing is open', () => {
+    const p = project();
+    useStore.setState(s => ({ workspace: { ...s.workspace, files: [], activeFileId: null } }));
+    get().requestOpenProject(p, 'proj.gene');
+    expect(get().pendingProjects).toEqual([]);
+    expect(ws().files.map(f => f.name)).toEqual(['', 'proj.fasta']);
+  });
+
+  it('asks first when files are already open', () => {
+    const p = project();
+    get().requestOpenProject(p, 'proj.gene');
+    expect(get().pendingProjects).toHaveLength(1);
+    expect(ws().files).toHaveLength(2); // unchanged until answered
+  });
+
+  it('adds the project alongside the open files', () => {
+    const p = project();
+    get().requestOpenProject(p, 'proj.gene');
+    get().resolvePendingProject('add');
+    expect(ws().files.map(f => f.name)).toEqual(['', 'proj.fasta', '', 'proj.fasta']);
+    expect(ws().fileName).toBe('proj.fasta');
+    expect(get().pendingProjects).toEqual([]);
+  });
+
+  it('replaces the open files with the project', () => {
+    const p = project();
+    get().requestOpenProject(p, 'proj.gene');
+    get().resolvePendingProject('replace');
+    expect(ws().files.map(f => f.name)).toEqual(['', 'proj.fasta']);
+  });
+
+  it('leaves everything as it was when cancelled', () => {
+    const p = project();
+    const before = ws().files.length;
+    get().requestOpenProject(p, 'proj.gene');
+    get().resolvePendingProject('cancel');
+    expect(ws().files).toHaveLength(before);
+    expect(get().pendingProjects).toEqual([]);
+  });
+
+  it('gives the same project, opened twice, sequences with ids of their own', () => {
+    const p = project();
+    get().openProject(p, 'add');
+    get().openProject(deserializeProject(projectOf(ws())), 'add');
+    const allIds = currentFiles(ws()).flatMap(f => f.documents.map(d => d.id));
+    expect(new Set(allIds).size).toBe(allIds.length);
   });
 });
 
