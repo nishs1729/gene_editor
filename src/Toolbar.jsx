@@ -8,8 +8,10 @@ import ToolbarMenu, { MenuItem, MenuToggle, MenuSection } from './ToolbarMenu.js
 import { TRANSFORMS } from './sequenceModel.js';
 import {
   downloadBlob, downloadText, fastaFor, modifiedFileName, projectFileName, selectionFileName,
+  modifiedGenBankFileName, selectionGenBankFileName,
 } from './exporters.js';
 import { encodeProject } from './project.js';
+import { genBankFor } from './genbank.js';
 import { createZip } from './zip.js';
 import { openFiles, OPEN_ACCEPT } from './openFiles.js';
 import { MIN_TREE_SEQUENCES } from './phylogenetics.js';
@@ -86,8 +88,7 @@ export default function Toolbar() {
     e.target.value = ''; // allow opening the same file again
   }
 
-  function exportFasta(fileName, documents, label) {
-    const text = fastaFor(documents);
+  function exportText(fileName, text, label) {
     if (!text) {
       showToast('No sequences to export', 'warning');
       return;
@@ -109,13 +110,23 @@ export default function Toolbar() {
   }
 
   function handleExportFile() {
-    exportFasta(modifiedFileName(workspace.fileName), workspace.documents, 'this file');
+    exportText(modifiedFileName(workspace.fileName), fastaFor(workspace.documents), 'this file');
   }
 
   function handleExportSelected() {
     const selected = workspace.documents.filter(d => selectedDocIds.has(d.id));
     const label = `${selected.length} sequence${selected.length === 1 ? '' : 's'}`;
-    exportFasta(selectionFileName(workspace.fileName, selected), selected, label);
+    exportText(selectionFileName(workspace.fileName, selected), fastaFor(selected), label);
+  }
+
+  function handleExportFileGenBank() {
+    exportText(modifiedGenBankFileName(workspace.fileName), genBankFor(workspace.documents), 'this file');
+  }
+
+  function handleExportSelectedGenBank() {
+    const selected = workspace.documents.filter(d => selectedDocIds.has(d.id));
+    const label = `${selected.length} sequence${selected.length === 1 ? '' : 's'}`;
+    exportText(selectionGenBankFileName(workspace.fileName, selected), genBankFor(selected), label);
   }
 
   function handleExportAllFiles() {
@@ -147,7 +158,7 @@ export default function Toolbar() {
         <button
           className="toolbar-btn toolbar-btn-primary"
           onClick={() => fileInputRef.current?.click()}
-          title="Open FASTA files, or a .gene project (you can also drop them on the window)"
+          title="Open FASTA or GenBank files, or a .gene project (you can also drop them on the window)"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M2 14h12M8 2v9M4 7l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" transform="rotate(180 8 8)"/>
@@ -194,6 +205,23 @@ export default function Toolbar() {
                 title="Every open file, each saved as its own <name>_modified FASTA, together in one .zip"
               >
                 All files (.zip)
+              </MenuItem>
+
+              <MenuSection>GenBank</MenuSection>
+              <MenuItem
+                onClick={() => { handleExportFileGenBank(); close(); }}
+                title={`The sequences of the file on screen, with their features, saved as ${modifiedGenBankFileName(workspace.fileName)}`}
+              >
+                This file (.gb)
+              </MenuItem>
+              <MenuItem
+                onClick={() => { handleExportSelectedGenBank(); close(); }}
+                disabled={selectedCount === 0}
+                title={selectedCount === 0
+                  ? 'Select sequences first: click a name, Ctrl+click to add more'
+                  : 'Only the selected sequences and their features, as a single GenBank file'}
+              >
+                Selected sequences{selectedCount > 0 ? ` (${selectedCount})` : ''}
               </MenuItem>
             </>
           )}

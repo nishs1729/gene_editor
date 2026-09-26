@@ -71,6 +71,16 @@ describe('loadWorkspace', () => {
     expect(ws().fileName).toBe('');
   });
 
+  it('attaches features supplied on a record, e.g. from a GenBank import', () => {
+    get().loadWorkspace([
+      { name: 'annotated', sequence: 'ACGTACGTACGT', features: [{ id: 'f1', label: 'tag', type: 'CDS', start: 0, end: 4, strand: 1, color: '#fff', notes: '' }] },
+      { name: 'plain', sequence: 'ACGTACGTACGT' },
+    ]);
+    expect(docs()[0].features).toHaveLength(1);
+    expect(docs()[0].features[0].label).toBe('tag');
+    expect(docs()[1].features).toEqual([]);
+  });
+
   it('locks editing, as newly opened documents do in Geneious', () => {
     get().toggleEditingEnabled();
     expect(ws().editingEnabled).toBe(true);

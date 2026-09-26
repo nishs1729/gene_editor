@@ -141,17 +141,20 @@ export default function HelpModal() {
               <p>
                 Use <strong>Open</strong>, or drop files anywhere on the window: <code>.fasta</code>,
                 <code>.fa</code>, <code>.fna</code>, <code>.aln</code> and <code>.txt</code> open as
-                sequence files, and a <code>.gene</code> file opens as the project it holds. Several
-                files can be open at once; switch between them in the <strong>Files</strong> panel.
-                Lower-case bases are uppercased and <code>.</code> gaps become <code>-</code> on the way in.
+                plain sequence files, <code>.gb</code>/<code>.gbk</code>/<code>.genbank</code> open with
+                their features already on the annotation lane, and a <code>.gene</code> file opens as
+                the project it holds. Several files can be open at once; switch between them in the
+                <strong> Files</strong> panel. Lower-case bases are uppercased and <code>.</code> gaps
+                become <code>-</code> on the way in.
               </p>
               <h3>Saving and exporting</h3>
               <p>
                 <strong>Save</strong> keeps every open file, with its recent undo history, in this
                 browser for next time. <strong>Export ▾</strong> writes files to take elsewhere:
                 a <strong>Project (.gene)</strong> with everything that's open, to carry on from on any
-                machine; the file on screen, the selected sequences, or all open files as FASTA.
-                Exported files are named after the originals with <code>_modified</code> added.
+                machine; the file on screen, the selected sequences, or all open files as FASTA; or the
+                file on screen or the selected sequences as GenBank, features included. Exported files
+                are named after the originals with <code>_modified</code> added.
               </p>
               <h3>Theme, palette and fullscreen</h3>
               <p>

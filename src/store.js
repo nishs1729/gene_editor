@@ -394,7 +394,10 @@ const useStore = create((set, get) => {
     // switches to it — it does not replace the current file, only adds one.
     loadWorkspace: (records, fileName = '') => {
       const { workspace } = get();
-      const documents = records.map(r => createDocument(r.name, r.sequence));
+      const documents = records.map(r => {
+        const doc = createDocument(r.name, r.sequence);
+        return r.features?.length ? { ...doc, features: r.features } : doc;
+      });
       const newFile = makeFileEntry(documents, fileName, workspace.viewSettings);
       set(activate(workspace, [...currentFiles(workspace), newFile], newFile, { unsavedChanges: true }));
     },

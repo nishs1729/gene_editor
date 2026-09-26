@@ -3,9 +3,10 @@
 
 import useStore from './store.js';
 import { parseFasta } from './fasta.js';
+import { parseGenBank, isGenBankFile } from './genbank.js';
 import { isProjectFile, decodeProject, deserializeProject } from './project.js';
 
-export const OPEN_ACCEPT = '.gene,.fasta,.fa,.fna,.fas,.aln,.txt';
+export const OPEN_ACCEPT = '.gene,.fasta,.fa,.fna,.fas,.aln,.txt,.gb,.gbk,.genbank';
 
 async function openProjectFile(file) {
   const store = useStore.getState();
@@ -17,17 +18,19 @@ async function openProjectFile(file) {
   }
 }
 
-async function openFastaFile(file) {
+async function openSequenceFile(file, parse) {
   const store = useStore.getState();
-  const records = parseFasta(await file.text()).filter(r => r.sequence.length > 0);
+  const records = parse(await file.text()).filter(r => r.sequence.length > 0);
   if (records.length === 0) {
     store.showToast(`No valid sequences found in "${file.name}"`, 'error');
     return;
   }
+  const features = records.reduce((n, r) => n + (r.features?.length ?? 0), 0);
   store.loadWorkspace(records, file.name);
   store.showToast(
     records.length === 1
-      ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp)`
+      ? `Loaded "${records[0].name}" (${records[0].sequence.length.toLocaleString()} bp`
+        + (features ? `, ${features} feature${features === 1 ? '' : 's'}` : '') + ')'
       : `Loaded ${records.length} sequences from "${file.name}"`,
     'info'
   );
@@ -40,6 +43,8 @@ async function openFastaFile(file) {
  */
 export async function openFiles(files) {
   for (const file of files) {
-    await (isProjectFile(file.name) ? openProjectFile(file) : openFastaFile(file));
+    if (isProjectFile(file.name)) await openProjectFile(file);
+    else if (isGenBankFile(file.name)) await openSequenceFile(file, parseGenBank);
+    else await openSequenceFile(file, parseFasta);
   }
 }

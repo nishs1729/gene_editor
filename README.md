@@ -1,6 +1,6 @@
 # Gene Editor
 
-A fast, browser-based viewer and editor for DNA/RNA sequences and multiple sequence alignments, styled after Geneious. Open FASTA files, read them as a single wrapped sequence or a stacked alignment, edit them, compare them, and take the result away as FASTA, SVG or CSV — no install, no account, and nothing ever leaves your browser.
+A fast, browser-based viewer and editor for DNA/RNA sequences and multiple sequence alignments, styled after Geneious. Open FASTA or GenBank files, read them as a single wrapped sequence or a stacked alignment, edit them, compare them, and take the result away as FASTA, GenBank, SVG or CSV — no install, no account, and nothing ever leaves your browser.
 
 **[Open the app →](https://nishs1729.github.io/gene_editor/)**
 
@@ -61,12 +61,13 @@ Reading and hand-curating sequence data: checking a Sanger read against a refere
 **Files**
 
 - **Several files at once** — each keeps its own sequences, selection, zoom and undo history; switch between them in the files panel.
+- **FASTA and GenBank** — GenBank import brings features in with the sequence; export either format back out.
 - **Projects** — pack everything open into one `.gene` file and reopen it on any machine.
 - **Saves to your browser** on demand, never automatically.
 
 ## Getting started
 
-1. **Open some sequences.** Click **Open**, or drop files anywhere on the window. `.fasta`, `.fa`, `.fna`, `.fas`, `.aln` and `.txt` open as sequence files; a `.gene` file opens the project it holds. Lower-case bases are uppercased and `.` gaps become `-` on the way in.
+1. **Open some sequences.** Click **Open**, or drop files anywhere on the window. `.fasta`, `.fa`, `.fna`, `.fas`, `.aln` and `.txt` open as plain sequence files; `.gb`, `.gbk` and `.genbank` open with their features already on the annotation lane; a `.gene` file opens the project it holds. Lower-case bases are uppercased and `.` gaps become `-` on the way in.
 2. **Find your way around.** One record opens wrapped; several open as a stacked alignment. Each file appears in the files panel on the left — click one to switch to it, or `«`/`»` to collapse the panel. Drag the divider at the right of the name gutter to give names more or less room.
 3. **Move and select.** Click to place the cursor, drag to select a range of bases, click a name in the gutter to select a whole sequence. Ctrl+scroll zooms about the pointer; the slider and **Fit** button at the bottom right do the same job with the mouse.
 4. **Edit, if you want to.** Click **Allow Editing** — until you do, the editor is read-only and the status bar says so.
@@ -118,6 +119,7 @@ Degenerate IUPAC codes (R Y S W K M B D H V N) and `U` are accepted anywhere a b
 
 - **Project (.gene)** — everything open: all files, your edits, recent undo history and view settings, in one file. Reopen it anywhere to carry on exactly where you left off. Opening a project while other files are open asks whether to add it alongside them or replace them.
 - **This file** / **Selected sequences** / **All files (.zip)** — FASTA copies. Exported names keep the original with `_modified` added, so they never overwrite your source data.
+- **This file** / **Selected sequences**, as GenBank — the same sequences with their features intact, as a `.gb` file. Useful when you added or edited annotations and want to keep them for a GenBank-reading tool elsewhere. Circular/linear topology isn't tracked, so a reopened file always comes back marked linear.
 
 The distance matrix and the tree export separately, as CSV and SVG, from their own windows.
 
@@ -188,7 +190,7 @@ A tour of `src/`:
 | State | `store.js` (single Zustand store), `sequenceModel.js`, `selection.js`, `editing.js` |
 | Rendering | `canvasRenderer.js` (the hot path), `SequenceCanvas.jsx`, `rowLayout.js`, `palettes.js`, `theme.js` |
 | Bioinformatics | `iupac.js`, `conservation.js`, `alignmentTools.js`, `phylogenetics.js`, `search.js`, `annotations.js` |
-| Files | `fasta.js`, `project.js`, `openFiles.js`, `exporters.js`, `zip.js` |
+| Files | `fasta.js`, `genbank.js`, `project.js`, `openFiles.js`, `exporters.js`, `zip.js` |
 | UI | `Toolbar.jsx`, `StatsPanel.jsx`, `SelectionReadout.jsx`, `FilesPanel.jsx`, and the dialogs |
 
 The renderer is the part worth understanding first: it virtualizes both axes, measures its own font metrics, and switches to pixel-column aggregation when a base is narrower than a pixel. Tests live in `src/__tests__/` and run in plain Node — there is no jsdom, so component logic is tested through the store rather than through the DOM.

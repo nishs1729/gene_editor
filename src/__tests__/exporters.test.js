@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { modifiedFileName, selectionFileName, projectFileName, fastaFor, safeFileName } from '../exporters.js';
+import {
+  modifiedFileName, selectionFileName, projectFileName, fastaFor, safeFileName,
+  modifiedGenBankFileName, selectionGenBankFileName,
+} from '../exporters.js';
 
 describe('modifiedFileName', () => {
   it('adds the suffix before the extension, keeping the extension', () => {
@@ -29,6 +32,27 @@ describe('selectionFileName', () => {
 
   it('uses the file name for several', () => {
     expect(selectionFileName('alpha.fa', [{ name: 'a' }, { name: 'b' }])).toBe('alpha_selected.fasta');
+  });
+});
+
+describe('modifiedGenBankFileName', () => {
+  it('forces a .gb extension regardless of the source extension', () => {
+    expect(modifiedGenBankFileName('alpha.fasta')).toBe('alpha_modified.gb');
+    expect(modifiedGenBankFileName('alpha.gb')).toBe('alpha_modified.gb');
+  });
+
+  it('does not stack the suffix on a file already exported once', () => {
+    expect(modifiedGenBankFileName('alpha_modified.fasta')).toBe('alpha_modified.gb');
+  });
+});
+
+describe('selectionGenBankFileName', () => {
+  it('uses the sequence name for a single sequence, with a .gb extension', () => {
+    expect(selectionGenBankFileName('alpha.fasta', [{ name: 'COI gene' }])).toBe('COI_gene.gb');
+  });
+
+  it('uses the file name for several', () => {
+    expect(selectionGenBankFileName('alpha.fa', [{ name: 'a' }, { name: 'b' }])).toBe('alpha_selected.gb');
   });
 });
 

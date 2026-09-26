@@ -55,6 +55,22 @@ export function selectionFileName(fileName, documents) {
   return `${safeFileName(stem, 'untitled').replace(/(_modified)+$/, '')}_selected.fasta`;
 }
 
+// GenBank export always uses a .gb extension, whatever the source file's own
+// extension was — unlike the FASTA export names above, which keep it, because
+// a file opened as FASTA has no GenBank extension to inherit.
+function stemOf(fileName) {
+  return safeFileName(splitExtension(fileName)[0], 'untitled').replace(/(_modified)+$/, '');
+}
+
+export function modifiedGenBankFileName(fileName) {
+  return `${stemOf(fileName)}_modified.gb`;
+}
+
+export function selectionGenBankFileName(fileName, documents) {
+  if (documents.length === 1) return `${safeFileName(documents[0].name)}.gb`;
+  return `${stemOf(fileName)}_selected.gb`;
+}
+
 /** The name a project is saved under: its only file's, or the date. */
 export function projectFileName(fileNames, date = new Date()) {
   const named = fileNames.filter(Boolean);
