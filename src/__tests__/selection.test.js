@@ -30,6 +30,11 @@ function makeStore() {
     toggleGroupCollapsed: vi.fn(),
     setRowDropIndex: vi.fn(),
     reorderDoc: vi.fn(),
+    addCursorVertical: vi.fn(),
+    toggleCursorAt: vi.fn(),
+    moveCursors: vi.fn(),
+    clearMultiCursors: vi.fn(),
+    toggleColumnCursor: vi.fn(),
   };
 }
 
@@ -139,6 +144,88 @@ describe('selection keys — stacked documents', () => {
   });
 });
 
+describe('selection keys — multiple cursors', () => {
+  let store, handle, docs, state;
+
+  beforeEach(() => {
+    store = makeStore();
+    docs = [
+      { ...createDocument('a', 'ACGTACGT'), cursorPos: 2, selection: null },
+      { ...createDocument('b', 'ACGTACGT'), cursorPos: 2, selection: null },
+    ];
+    state = { documents: docs, columnCursor: null, columnSelection: null, multiCursors: null };
+    ({ handleSelectionKeys: handle } = createSelectionKeyHandlers(
+      () => ({ state, doc: docs[1], basesPerRow: 4 }),
+      store
+    ));
+  });
+
+  it('Alt+↑ and Alt+↓ add a cursor rather than change rows', () => {
+    expect(handle(key('ArrowUp', { altKey: true }))).toBe(true);
+    expect(store.addCursorVertical).toHaveBeenLastCalledWith('up');
+    handle(key('ArrowDown', { altKey: true }));
+    expect(store.addCursorVertical).toHaveBeenLastCalledWith('down');
+    expect(store.setActiveDoc).not.toHaveBeenCalled();
+  });
+
+  it('Alt+↑ does nothing with one sequence, or with a column cursor', () => {
+    state.columnCursor = 3;
+    expect(handle(key('ArrowUp', { altKey: true }))).toBe(true);
+    state.columnCursor = null;
+    state.documents = [docs[0]];
+    expect(handle(key('ArrowUp', { altKey: true }))).toBe(true);
+    expect(store.addCursorVertical).not.toHaveBeenCalled();
+    expect(store.setCursorPos).not.toHaveBeenCalled();
+  });
+
+  it('Alt+Shift+I toggles a column cursor, whatever character the key types', () => {
+    expect(handle(key('I', { altKey: true, shiftKey: true, code: 'KeyI' }))).toBe(true);
+    handle(key('ˆ', { altKey: true, shiftKey: true, code: 'KeyI' })); // Option+Shift+I on a Mac
+    expect(store.toggleColumnCursor).toHaveBeenCalledTimes(2);
+  });
+
+  it('Alt+Shift+I does nothing with one sequence', () => {
+    state.documents = [docs[0]];
+    expect(handle(key('I', { altKey: true, shiftKey: true, code: 'KeyI' }))).toBe(true);
+    expect(store.toggleColumnCursor).not.toHaveBeenCalled();
+  });
+
+  describe('with several', () => {
+    beforeEach(() => {
+      state.multiCursors = [{ docId: docs[0].id, pos: 2 }, { docId: docs[1].id, pos: 2 }];
+    });
+
+    it('moves them all along their rows', () => {
+      handle(key('ArrowLeft'));
+      expect(store.moveCursors).toHaveBeenLastCalledWith(-1);
+      handle(key('ArrowRight', { shiftKey: true }));
+      expect(store.moveCursors).toHaveBeenLastCalledWith(1);
+      handle(key('Home'));
+      expect(store.moveCursors).toHaveBeenLastCalledWith('home');
+      handle(key('End'));
+      expect(store.moveCursors).toHaveBeenLastCalledWith('end');
+      expect(store.setCursorPos).not.toHaveBeenCalled();
+      expect(store.setSelection).not.toHaveBeenCalled();
+    });
+
+    it('Escape goes back to one cursor', () => {
+      expect(handle(key('Escape'))).toBe(true);
+      expect(store.clearMultiCursors).toHaveBeenCalled();
+    });
+
+    it('plain ↑/↓ goes back to one cursor, then changes row', () => {
+      handle(key('ArrowUp'));
+      expect(store.clearMultiCursors).toHaveBeenCalled();
+      expect(store.setActiveDoc).toHaveBeenCalledWith(docs[0].id);
+    });
+
+    it('leaves typing to the editing handler', () => {
+      expect(handle(key('g'))).toBe(false);
+      expect(store.clearMultiCursors).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('selection keys — column cursor', () => {
   let store, handle, state;
 
@@ -162,10 +249,13 @@ describe('selection keys — column cursor', () => {
     expect(store.setCursorPos).not.toHaveBeenCalled();
   });
 
-  it('clamps to the longest sequence, not the active one', () => {
+  it('clamps to just past the longest sequence, not the active one', () => {
     state.columnCursor = 9;
     handle(key('ArrowRight'));
-    expect(store.setColumnCursor).toHaveBeenCalledWith(9);
+    expect(store.setColumnCursor).toHaveBeenCalledWith(10);
+    state.columnCursor = 10;
+    handle(key('ArrowRight'));
+    expect(store.setColumnCursor).toHaveBeenLastCalledWith(10);
   });
 
   it('does not run off the left edge', () => {
@@ -257,6 +347,22 @@ describe('mouse handling', () => {
       () => ({ state, scroll: { top: 0, left: 0 }, editingEnabled: true }),
       store
     );
+  });
+
+  it('Alt+click on a base adds (or removes) a cursor there, and places nothing else', () => {
+    hit = { kind: 'seq', docId: state.documents[1].id, index: 5 };
+    handlers.onMouseDown(mouse({ altKey: true }));
+    expect(store.toggleCursorAt).toHaveBeenCalledWith(state.documents[1].id, 5);
+    expect(store.setCursorPos).not.toHaveBeenCalled();
+    expect(store.setActiveDoc).not.toHaveBeenCalled();
+  });
+
+  it('Alt+click is a plain click with only one sequence', () => {
+    state.documents = [state.documents[0]];
+    hit = { kind: 'seq', docId: state.documents[0].id, index: 5 };
+    handlers.onMouseDown(mouse({ altKey: true }));
+    expect(store.toggleCursorAt).not.toHaveBeenCalled();
+    expect(store.setCursorPos).toHaveBeenCalledWith(5);
   });
 
   it('focuses the canvas, since preventDefault would otherwise suppress it', () => {

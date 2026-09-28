@@ -130,6 +130,13 @@ export function createMouseHandlers(renderer, getContext, store, requestRender =
       return;
     }
 
+    // Alt+click adds a cursor, or takes one away — in the alignment view,
+    // where there are rows to put them on.
+    if (e.altKey && hit.kind === 'seq' && state.documents.length > 1) {
+      store.toggleCursorAt(hit.docId, hit.index);
+      return;
+    }
+
     const wasActive = hit.docId === state.activeDocId;
     if (!wasActive) store.setActiveDoc(hit.docId);
     // Clicking a sequence cell clears any column cursor/selection.
@@ -379,6 +386,57 @@ export function createSelectionKeyHandlers(getContext, store) {
   function handleSelectionKeys(e) {
     const { state, doc, basesPerRow } = getContext();
     if (!doc) return false;
+    const stacked = state.documents.length > 1;
+
+    // Alt+Shift+I puts a column cursor on every row at the cursor, as VS Code's
+    // Alt+Shift+I puts a cursor on every line, and takes it back again. By code,
+    // not key: Shift, and Option on a Mac, change the character it types.
+    if (e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyI') {
+      if (stacked) store.toggleColumnCursor();
+      return true;
+    }
+
+    // Alt+↑/↓ adds a cursor on the row above or below. It is kept for that even
+    // where it can't — one sequence, or a column cursor — so it doesn't fall
+    // through to plain ↑/↓.
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      if (stacked && state.columnCursor === null && !state.columnSelection) {
+        store.addCursorVertical(e.key === 'ArrowUp' ? 'up' : 'down');
+      }
+      return true;
+    }
+
+    // Several cursors move together along their rows. Anything that means one
+    // cursor again — Escape, a move to another row, select-all — lets them go.
+    if (state.multiCursors) {
+      switch (e.key) {
+        case 'ArrowLeft':
+          store.moveCursors(-1);
+          return true;
+        case 'ArrowRight':
+          store.moveCursors(1);
+          return true;
+        case 'Home':
+          store.moveCursors('home');
+          return true;
+        case 'End':
+          store.moveCursors('end');
+          return true;
+        case 'Escape':
+          store.clearMultiCursors();
+          return true;
+        case 'ArrowUp':
+        case 'ArrowDown':
+          store.clearMultiCursors();
+          break;
+        case 'a':
+        case 'A':
+          if (e.ctrlKey || e.metaKey) store.clearMultiCursors();
+          break;
+        default:
+          break;
+      }
+    }
 
     // A column-range selection from a ruler drag: Escape clears it; Arrow keys collapse to cursor.
     if (state.columnSelection) {
@@ -405,7 +463,8 @@ export function createSelectionKeyHandlers(getContext, store) {
           store.setColumnCursor(Math.max(0, state.columnCursor - 1));
           return true;
         case 'ArrowRight':
-          store.setColumnCursor(Math.min(maxLen - 1, state.columnCursor + 1));
+          // Up to just past the last column, where a new one can be added.
+          store.setColumnCursor(Math.min(maxLen, state.columnCursor + 1));
           return true;
         case 'Escape':
           store.setColumnCursor(null);
@@ -416,7 +475,6 @@ export function createSelectionKeyHandlers(getContext, store) {
     }
 
     const pos = doc.cursorPos ?? 0;
-    const stacked = state.documents.length > 1;
 
     /** Opposite end of the selection from the cursor, for Shift+arrow extension. */
     const extendAnchor = () => {

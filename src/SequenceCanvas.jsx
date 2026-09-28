@@ -17,11 +17,15 @@ const LINE_DELTA_PX = 16; // Firefox reports wheel deltas in lines, not pixels
 /** The slice of store state the renderer and interaction handlers read from. */
 function renderState() {
   const state = useStore.getState();
-  const { documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor, columnSelection } =
-    state.workspace;
+  const {
+    documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds, columnCursor, columnSelection,
+    multiCursors, hiddenDocIds, pinnedDocIds, groups,
+  } = state.workspace;
   return {
     documents, activeDocId, viewSettings, dragInsertIndex, selectedDocIds,
-    columnCursor, columnSelection,
+    columnCursor, columnSelection, multiCursors,
+    // Which rows are drawn, and in what order — see rowLayout.js.
+    hiddenDocIds, pinnedDocIds, groups,
     find: state.find,
   };
 }
@@ -319,6 +323,9 @@ export default function SequenceCanvas() {
           }}
           onMouseLeave={() => setTooltip(null)}
           onKeyDown={(e) => keyHandlerRef.current?.(e)}
+          // Alt adds cursors here. Let go on its own, it would otherwise focus
+          // the browser's menu bar (Firefox, and Chrome on Windows).
+          onKeyUp={(e) => { if (e.key === 'Alt') e.preventDefault(); }}
           style={{ position: 'sticky', top: 0, left: 0 }}
         />
 

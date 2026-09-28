@@ -12,6 +12,7 @@ export default function SelectionReadout() {
   const editingEnabled = useStore(s => s.workspace.editingEnabled);
   const viewSettings = useStore(s => s.workspace.viewSettings);
   const isStacked = useStore(s => s.workspace.documents.length > 1);
+  const cursorCount = useStore(s => s.workspace.multiCursors?.length ?? 0);
   const setColorPalette = useStore(s => s.setColorPalette);
   const toggleColumnGuides = useStore(s => s.toggleColumnGuides);
   const toggleMinimap = useStore(s => s.toggleMinimap);
@@ -25,7 +26,14 @@ export default function SelectionReadout() {
   return (
     <div className="selection-readout">
       {hasSequence && (
-        selection ? (
+        cursorCount > 1 ? (
+          <>
+            <span className="readout-label">Cursors:</span>
+            <span className="readout-value">
+              {cursorCount} (Esc for one)
+            </span>
+          </>
+        ) : selection ? (
           <>
             <span className="readout-label">Selection:</span>
             <span className="readout-value">

@@ -4,7 +4,6 @@
 import { create } from 'zustand';
 import {
   createDocument,
-  substitute as modelSubstitute,
   insertAt as modelInsertAt,
   deleteRange as modelDeleteRange,
   replaceRange as modelReplaceRange,
@@ -23,8 +22,14 @@ import { percentIdentity } from './conservation.js';
 import { createFeature, upsertFeature, removeFeature } from './annotations.js';
 import { DEFAULT_THEME } from './theme.js';
 import { DEFAULT_PALETTE, PALETTES } from './palettes.js';
-import { GAP_CHAR } from './iupac.js';
 import { PROJECT_FORMAT, serializeProject, deserializeProject } from './project.js';
+import { visibleDocuments } from './rowLayout.js';
+import {
+  addCursorVertical as addCursorVerticalTo,
+  toggleCursor,
+  moveCursors as moveCursorsBy,
+  applyAtCursors,
+} from './multiCursor.js';
 
 const STORAGE_KEY = 'geneEditor.workspace';
 const THEME_KEY = 'geneEditor.theme';
@@ -108,6 +113,7 @@ function makeFileEntry(documents, name, viewSettings) {
     lastSelectionClickId: null,
     columnCursor: null,
     columnSelection: null,
+    multiCursors: null, // Array<cursor> of two or more — see multiCursor.js
     renamingDocId: null,
     workspaceHistory: [],
     workspaceFuture: [],
@@ -148,6 +154,21 @@ function statsFor({ documents = [], activeDocId }) {
   return doc ? getStats(doc.raw) : EMPTY_STATS;
 }
 
+/**
+ * Undo or redo a multi-row edit: `step` once on each row for every time
+ * `docIds` names it — an edit at several cursors in one row records one entry
+ * on that row's own stack for each of them.
+ */
+function stepEach(documents, docIds, step) {
+  const counts = new Map();
+  for (const id of docIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+  return documents.map(d => {
+    let doc = d;
+    for (let n = counts.get(d.id) ?? 0; n > 0; n--) doc = step(doc);
+    return doc;
+  });
+}
+
 /** Package the currently active file's live top-level state back into an entry. */
 function snapshotActiveFile(workspace) {
   return {
@@ -164,6 +185,7 @@ function snapshotActiveFile(workspace) {
     lastSelectionClickId: workspace.lastSelectionClickId,
     columnCursor: workspace.columnCursor,
     columnSelection: workspace.columnSelection,
+    multiCursors: workspace.multiCursors,
     renamingDocId: workspace.renamingDocId,
     workspaceHistory: workspace.workspaceHistory,
     workspaceFuture: workspace.workspaceFuture,
@@ -219,8 +241,11 @@ const initialFile = persisted.files[persisted.activeIndex] ?? null;
 let toastTimer = null;
 
 const useStore = create((set, get) => {
-  /** Apply `fn` to the active document and write the result back. */
-  function updateActive(fn) {
+  /**
+   * Apply `fn` to the active document and write the result back, along with
+   * any other workspace fields in `extra`.
+   */
+  function updateActive(fn, extra = {}) {
     const { workspace } = get();
     const index = workspace.documents.findIndex(d => d.id === workspace.activeDocId);
     if (index === -1) return;
@@ -232,7 +257,7 @@ const useStore = create((set, get) => {
     const documents = [...workspace.documents];
     documents[index] = newDoc;
     set({
-      workspace: { ...workspace, documents },
+      workspace: { ...workspace, documents, ...extra },
       stats: getStats(newDoc.raw),
     });
   }
@@ -257,6 +282,8 @@ const useStore = create((set, get) => {
       workspace: {
         ...workspace,
         documents,
+        // An edit made from one row's cursor moves the bases under the others.
+        multiCursors: null,
         workspaceHistory: [...workspace.workspaceHistory, command],
         workspaceFuture: [],
       },
@@ -289,6 +316,7 @@ const useStore = create((set, get) => {
       workspace: {
         ...workspace,
         documents,
+        multiCursors: null,
         workspaceHistory: [...workspace.workspaceHistory, command],
         workspaceFuture: [],
       },
@@ -326,6 +354,302 @@ const useStore = create((set, get) => {
       },
       stats: target ? statsFor(target) : EMPTY_STATS,
     };
+  }
+
+  /**
+   * The state change that puts the cursors at `cursors`: the last is the
+   * primary, so its row becomes the active one with its caret there. One cursor
+   * left is just the ordinary cursor.
+   */
+  function cursorsState(workspace, cursors, documents = workspace.documents) {
+    const primary = cursors[cursors.length - 1];
+    const active = documents.find(d => d.id === primary.docId);
+    return {
+      workspace: {
+        ...workspace,
+        documents: documents.map(d => (
+          d === active ? { ...d, cursorPos: primary.pos, selection: null } : d
+        )),
+        activeDocId: primary.docId,
+        multiCursors: cursors.length > 1 ? cursors : null,
+        columnCursor: null,
+        columnSelection: null,
+        // While rows are selected, Delete means the rows, not the bases.
+        selectedDocIds: workspace.selectedDocIds.size > 0 ? new Set() : workspace.selectedDocIds,
+      },
+      stats: active ? getStats(active.raw) : EMPTY_STATS,
+    };
+  }
+
+  /** Every cursor, the ordinary one included, as multi-cursor editing sees them. */
+  function cursorsOf(workspace) {
+    if (workspace.multiCursors) return workspace.multiCursors;
+    const doc = workspace.documents.find(d => d.id === workspace.activeDocId);
+    return doc ? [{ docId: doc.id, pos: Math.min(doc.cursorPos ?? 0, doc.raw.length) }] : [];
+  }
+
+  /** Apply `op` at every cursor, as one undo step — see applyAtCursors. */
+  function editAtCursors(op) {
+    const { workspace } = get();
+    const before = workspace.multiCursors;
+    if (!before) return;
+    const result = applyAtCursors(workspace.documents, before, op);
+    if (result.docIds.length === 0) return;
+
+    const command = {
+      type: 'multilineEdit',
+      docIds: result.docIds,
+      previousCursors: before,
+      nextCursors: result.cursors,
+    };
+    const next = cursorsState(workspace, result.cursors, result.documents);
+    set({
+      ...next,
+      workspace: {
+        ...next.workspace,
+        workspaceHistory: [...workspace.workspaceHistory, command],
+        workspaceFuture: [],
+      },
+    });
+  }
+
+  /**
+   * After an undo or redo: the cursors the step left, if it was made at
+   * several, and otherwise none — they would be pointing at bases that moved.
+   */
+  function restoreCursors(cursors) {
+    const { workspace } = get();
+    const live = (cursors ?? []).filter(c => workspace.documents.some(d => d.id === c.docId));
+    if (live.length > 1) set(cursorsState(workspace, live));
+    else if (workspace.multiCursors) set({ workspace: { ...workspace, multiCursors: null } });
+  }
+
+  /** Undo the most recent step, workspace-wide or the active row's own. */
+  function undoStep() {
+    const { workspace } = get();
+    const { workspaceHistory } = workspace;
+
+    // Workspace-level undo (deletion, multiline edit, doc edit).
+    if (workspaceHistory.length > 0) {
+      const command = workspaceHistory[workspaceHistory.length - 1];
+      if (command.type === 'deleteDocuments') {
+        // Re-insert the deleted documents at their original positions.
+        const documents = [...workspace.documents];
+        for (let i = 0; i < command.deletedDocs.length; i++) {
+          documents.splice(command.deletedIndices[i], 0, command.deletedDocs[i]);
+        }
+        const activeDocId = command.previousActiveDocId ?? documents[0]?.id ?? null;
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            activeDocId,
+            selectedDocIds: command.previousSelectedDocIds,
+            // Restore the reference if it was one of the deleted documents.
+            viewSettings: command.deletedDocs.some(
+              d => d.id === workspace.viewSettings.referenceDocId
+            )
+              ? workspace.viewSettings
+              : {
+                  ...workspace.viewSettings,
+                  referenceDocId: command.previousReferenceDocId,
+                },
+            workspaceHistory: workspaceHistory.slice(0, -1),
+            workspaceFuture: [...workspace.workspaceFuture, command],
+          },
+          stats: documents.find(d => d.id === activeDocId)
+            ? getStats(documents.find(d => d.id === activeDocId).raw)
+            : EMPTY_STATS,
+        });
+        return;
+      }
+
+      if (command.type === 'features') {
+        // Features are swapped the same way an order is: the command carries
+        // the list to restore and takes the current one for the other stack.
+        const current = workspace.documents.find(d => d.id === command.docId)?.features ?? [];
+        set({
+          workspace: {
+            ...workspace,
+            documents: workspace.documents.map(d => (
+              d.id === command.docId ? { ...d, features: command.previousFeatures } : d
+            )),
+            workspaceHistory: workspaceHistory.slice(0, -1),
+            workspaceFuture: [
+              ...workspace.workspaceFuture,
+              { type: 'features', docId: command.docId, previousFeatures: current },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (command.type === 'reorderDocuments') {
+        // Swap the orders round: the command carries the order to restore, and
+        // the one it replaces is what redo will need.
+        const byId = new Map(workspace.documents.map(d => [d.id, d]));
+        const documents = command.previousOrder.map(id => byId.get(id)).filter(Boolean);
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            workspaceHistory: workspaceHistory.slice(0, -1),
+            workspaceFuture: [
+              ...workspace.workspaceFuture,
+              { type: 'reorderDocuments', previousOrder: workspace.documents.map(d => d.id) },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (command.type === 'multilineEdit') {
+        const documents = stepEach(workspace.documents, command.docIds, modelUndo);
+        const activeDocId = workspace.activeDocId;
+        const active = documents.find(d => d.id === activeDocId);
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            columnCursor: command.previousColumnCursor !== undefined ? command.previousColumnCursor : workspace.columnCursor,
+            columnSelection: command.previousColumnSelection !== undefined ? command.previousColumnSelection : workspace.columnSelection,
+            workspaceHistory: workspaceHistory.slice(0, -1),
+            workspaceFuture: [...workspace.workspaceFuture, command],
+          },
+          stats: active ? getStats(active.raw) : EMPTY_STATS,
+        });
+        return;
+      }
+
+      if (command.type === 'docEdit') {
+        const documents = workspace.documents.map(d =>
+          d.id === command.docId ? modelUndo(d) : d
+        );
+        const activeDocId = workspace.activeDocId;
+        const active = documents.find(d => d.id === activeDocId);
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            workspaceHistory: workspaceHistory.slice(0, -1),
+            workspaceFuture: [...workspace.workspaceFuture, command],
+          },
+          stats: active ? getStats(active.raw) : EMPTY_STATS,
+        });
+        return;
+      }
+    }
+
+    // Fall back to per-document undo if workspaceHistory is empty.
+    updateActive(modelUndo);
+  }
+
+  function redoStep() {
+    const { workspace } = get();
+    const { workspaceFuture } = workspace;
+
+    // Workspace-level redo mirrors workspace-level undo.
+    if (workspaceFuture.length > 0) {
+      const command = workspaceFuture[workspaceFuture.length - 1];
+      if (command.type === 'deleteDocuments') {
+        const deletedIds = new Set(command.deletedDocs.map(d => d.id));
+        const documents = workspace.documents.filter(d => !deletedIds.has(d.id));
+        const activeDocId = deletedIds.has(workspace.activeDocId)
+          ? (documents[0]?.id ?? null)
+          : workspace.activeDocId;
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            activeDocId,
+            selectedDocIds: new Set(),
+            columnCursor: null,
+            columnSelection: null,
+            viewSettings: deletedIds.has(workspace.viewSettings.referenceDocId)
+              ? { ...workspace.viewSettings, referenceDocId: null }
+              : workspace.viewSettings,
+            workspaceFuture: workspaceFuture.slice(0, -1),
+            workspaceHistory: [...workspace.workspaceHistory, command],
+          },
+          stats: documents.find(d => d.id === activeDocId)
+            ? getStats(documents.find(d => d.id === activeDocId).raw)
+            : EMPTY_STATS,
+        });
+        return;
+      }
+
+      if (command.type === 'features') {
+        const current = workspace.documents.find(d => d.id === command.docId)?.features ?? [];
+        set({
+          workspace: {
+            ...workspace,
+            documents: workspace.documents.map(d => (
+              d.id === command.docId ? { ...d, features: command.previousFeatures } : d
+            )),
+            workspaceFuture: workspaceFuture.slice(0, -1),
+            workspaceHistory: [
+              ...workspace.workspaceHistory,
+              { type: 'features', docId: command.docId, previousFeatures: current },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (command.type === 'reorderDocuments') {
+        const byId = new Map(workspace.documents.map(d => [d.id, d]));
+        const documents = command.previousOrder.map(id => byId.get(id)).filter(Boolean);
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            workspaceFuture: workspaceFuture.slice(0, -1),
+            workspaceHistory: [
+              ...workspace.workspaceHistory,
+              { type: 'reorderDocuments', previousOrder: workspace.documents.map(d => d.id) },
+            ],
+          },
+        });
+        return;
+      }
+
+      if (command.type === 'multilineEdit') {
+        const documents = stepEach(workspace.documents, command.docIds, modelRedo);
+        const activeDocId = workspace.activeDocId;
+        const active = documents.find(d => d.id === activeDocId);
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            workspaceFuture: workspaceFuture.slice(0, -1),
+            workspaceHistory: [...workspace.workspaceHistory, command],
+          },
+          stats: active ? getStats(active.raw) : EMPTY_STATS,
+        });
+        return;
+      }
+
+      if (command.type === 'docEdit') {
+        const documents = workspace.documents.map(d =>
+          d.id === command.docId ? modelRedo(d) : d
+        );
+        const activeDocId = workspace.activeDocId;
+        const active = documents.find(d => d.id === activeDocId);
+        set({
+          workspace: {
+            ...workspace,
+            documents,
+            workspaceFuture: workspaceFuture.slice(0, -1),
+            workspaceHistory: [...workspace.workspaceHistory, command],
+          },
+          stats: active ? getStats(active.raw) : EMPTY_STATS,
+        });
+        return;
+      }
+    }
+
+    // Fall back to per-document redo.
+    updateActive(modelRedo);
   }
 
   function patchViewSettings(patch) {
@@ -468,7 +792,7 @@ const useStore = create((set, get) => {
       const doc = workspace.documents.find(d => d.id === id);
       if (!doc) return;
       set({
-        workspace: { ...workspace, activeDocId: id },
+        workspace: { ...workspace, activeDocId: id, multiCursors: null },
         stats: getStats(doc.raw),
       });
     },
@@ -512,7 +836,6 @@ const useStore = create((set, get) => {
 
     // --- Editing (all target the active document) ---
 
-    substitute: (pos, char) => editActive(doc => modelSubstitute(doc, pos, char)),
     insertAt: (pos, str) => editActive(doc => modelInsertAt(doc, pos, str)),
     deleteRange: (start, end) => editActive(doc => modelDeleteRange(doc, start, end)),
     replaceRange: (start, end, text) => editActive(doc => modelReplaceRange(doc, start, end, text)),
@@ -520,251 +843,119 @@ const useStore = create((set, get) => {
     reverseComplementActive: () => editActive(modelReverseComplement),
 
     undo: () => {
-      const { workspace } = get();
-      const { workspaceHistory } = workspace;
-
-      // Workspace-level undo (deletion, multiline edit, doc edit).
-      if (workspaceHistory.length > 0) {
-        const command = workspaceHistory[workspaceHistory.length - 1];
-        if (command.type === 'deleteDocuments') {
-          // Re-insert the deleted documents at their original positions.
-          const documents = [...workspace.documents];
-          for (let i = 0; i < command.deletedDocs.length; i++) {
-            documents.splice(command.deletedIndices[i], 0, command.deletedDocs[i]);
-          }
-          const activeDocId = command.previousActiveDocId ?? documents[0]?.id ?? null;
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              activeDocId,
-              selectedDocIds: command.previousSelectedDocIds,
-              // Restore the reference if it was one of the deleted documents.
-              viewSettings: command.deletedDocs.some(
-                d => d.id === workspace.viewSettings.referenceDocId
-              )
-                ? workspace.viewSettings
-                : {
-                    ...workspace.viewSettings,
-                    referenceDocId: command.previousReferenceDocId,
-                  },
-              workspaceHistory: workspaceHistory.slice(0, -1),
-              workspaceFuture: [...workspace.workspaceFuture, command],
-            },
-            stats: documents.find(d => d.id === activeDocId)
-              ? getStats(documents.find(d => d.id === activeDocId).raw)
-              : EMPTY_STATS,
-          });
-          return;
-        }
-
-        if (command.type === 'features') {
-          // Features are swapped the same way an order is: the command carries
-          // the list to restore and takes the current one for the other stack.
-          const current = workspace.documents.find(d => d.id === command.docId)?.features ?? [];
-          set({
-            workspace: {
-              ...workspace,
-              documents: workspace.documents.map(d => (
-                d.id === command.docId ? { ...d, features: command.previousFeatures } : d
-              )),
-              workspaceHistory: workspaceHistory.slice(0, -1),
-              workspaceFuture: [
-                ...workspace.workspaceFuture,
-                { type: 'features', docId: command.docId, previousFeatures: current },
-              ],
-            },
-          });
-          return;
-        }
-
-        if (command.type === 'reorderDocuments') {
-          // Swap the orders round: the command carries the order to restore, and
-          // the one it replaces is what redo will need.
-          const byId = new Map(workspace.documents.map(d => [d.id, d]));
-          const documents = command.previousOrder.map(id => byId.get(id)).filter(Boolean);
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              workspaceHistory: workspaceHistory.slice(0, -1),
-              workspaceFuture: [
-                ...workspace.workspaceFuture,
-                { type: 'reorderDocuments', previousOrder: workspace.documents.map(d => d.id) },
-              ],
-            },
-          });
-          return;
-        }
-
-        if (command.type === 'multilineEdit') {
-          const docIdSet = new Set(command.docIds);
-          const documents = workspace.documents.map(d =>
-            docIdSet.has(d.id) ? modelUndo(d) : d
-          );
-          const activeDocId = workspace.activeDocId;
-          const active = documents.find(d => d.id === activeDocId);
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              columnCursor: command.previousColumnCursor !== undefined ? command.previousColumnCursor : workspace.columnCursor,
-              columnSelection: command.previousColumnSelection !== undefined ? command.previousColumnSelection : workspace.columnSelection,
-              workspaceHistory: workspaceHistory.slice(0, -1),
-              workspaceFuture: [...workspace.workspaceFuture, command],
-            },
-            stats: active ? getStats(active.raw) : EMPTY_STATS,
-          });
-          return;
-        }
-
-        if (command.type === 'docEdit') {
-          const documents = workspace.documents.map(d =>
-            d.id === command.docId ? modelUndo(d) : d
-          );
-          const activeDocId = workspace.activeDocId;
-          const active = documents.find(d => d.id === activeDocId);
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              workspaceHistory: workspaceHistory.slice(0, -1),
-              workspaceFuture: [...workspace.workspaceFuture, command],
-            },
-            stats: active ? getStats(active.raw) : EMPTY_STATS,
-          });
-          return;
-        }
-      }
-
-      // Fall back to per-document undo if workspaceHistory is empty.
-      updateActive(modelUndo);
+      const command = get().workspace.workspaceHistory.at(-1);
+      undoStep();
+      restoreCursors(command?.previousCursors);
     },
 
     redo: () => {
-      const { workspace } = get();
-      const { workspaceFuture } = workspace;
-
-      // Workspace-level redo mirrors workspace-level undo.
-      if (workspaceFuture.length > 0) {
-        const command = workspaceFuture[workspaceFuture.length - 1];
-        if (command.type === 'deleteDocuments') {
-          const deletedIds = new Set(command.deletedDocs.map(d => d.id));
-          const documents = workspace.documents.filter(d => !deletedIds.has(d.id));
-          const activeDocId = deletedIds.has(workspace.activeDocId)
-            ? (documents[0]?.id ?? null)
-            : workspace.activeDocId;
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              activeDocId,
-              selectedDocIds: new Set(),
-              columnCursor: null,
-              columnSelection: null,
-              viewSettings: deletedIds.has(workspace.viewSettings.referenceDocId)
-                ? { ...workspace.viewSettings, referenceDocId: null }
-                : workspace.viewSettings,
-              workspaceFuture: workspaceFuture.slice(0, -1),
-              workspaceHistory: [...workspace.workspaceHistory, command],
-            },
-            stats: documents.find(d => d.id === activeDocId)
-              ? getStats(documents.find(d => d.id === activeDocId).raw)
-              : EMPTY_STATS,
-          });
-          return;
-        }
-
-        if (command.type === 'features') {
-          const current = workspace.documents.find(d => d.id === command.docId)?.features ?? [];
-          set({
-            workspace: {
-              ...workspace,
-              documents: workspace.documents.map(d => (
-                d.id === command.docId ? { ...d, features: command.previousFeatures } : d
-              )),
-              workspaceFuture: workspaceFuture.slice(0, -1),
-              workspaceHistory: [
-                ...workspace.workspaceHistory,
-                { type: 'features', docId: command.docId, previousFeatures: current },
-              ],
-            },
-          });
-          return;
-        }
-
-        if (command.type === 'reorderDocuments') {
-          const byId = new Map(workspace.documents.map(d => [d.id, d]));
-          const documents = command.previousOrder.map(id => byId.get(id)).filter(Boolean);
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              workspaceFuture: workspaceFuture.slice(0, -1),
-              workspaceHistory: [
-                ...workspace.workspaceHistory,
-                { type: 'reorderDocuments', previousOrder: workspace.documents.map(d => d.id) },
-              ],
-            },
-          });
-          return;
-        }
-
-        if (command.type === 'multilineEdit') {
-          const docIdSet = new Set(command.docIds);
-          const documents = workspace.documents.map(d =>
-            docIdSet.has(d.id) ? modelRedo(d) : d
-          );
-          const activeDocId = workspace.activeDocId;
-          const active = documents.find(d => d.id === activeDocId);
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              workspaceFuture: workspaceFuture.slice(0, -1),
-              workspaceHistory: [...workspace.workspaceHistory, command],
-            },
-            stats: active ? getStats(active.raw) : EMPTY_STATS,
-          });
-          return;
-        }
-
-        if (command.type === 'docEdit') {
-          const documents = workspace.documents.map(d =>
-            d.id === command.docId ? modelRedo(d) : d
-          );
-          const activeDocId = workspace.activeDocId;
-          const active = documents.find(d => d.id === activeDocId);
-          set({
-            workspace: {
-              ...workspace,
-              documents,
-              workspaceFuture: workspaceFuture.slice(0, -1),
-              workspaceHistory: [...workspace.workspaceHistory, command],
-            },
-            stats: active ? getStats(active.raw) : EMPTY_STATS,
-          });
-          return;
-        }
-      }
-
-      // Fall back to per-document redo.
-      updateActive(modelRedo);
+      const command = get().workspace.workspaceFuture.at(-1);
+      redoStep();
+      restoreCursors(command?.nextCursors);
     },
+
 
     // --- Selection / cursor (active document) ---
 
+    // Placing the one cursor or a selection is a way out of multiple cursors.
     setSelection: (start, end) => updateActive(doc => ({
       ...doc,
       selection: start === end
         ? null
         : { start: Math.min(start, end), end: Math.max(start, end) },
       cursorPos: end,
-    })),
+    }), { multiCursors: null }),
 
-    setCursorPos: (pos) => updateActive(doc => ({ ...doc, cursorPos: pos, selection: null })),
+    setCursorPos: (pos) => updateActive(
+      doc => ({ ...doc, cursorPos: pos, selection: null }),
+      { multiCursors: null }
+    ),
 
     clearSelection: () => updateActive(doc => (doc.selection ? { ...doc, selection: null } : doc)),
+
+    // --- Multiple cursors (see multiCursor.js) ---
+
+    /** Alt+↑ / Alt+↓: grow the cursors a row up or down, or take the last one back. */
+    addCursorVertical: (dir) => {
+      const { workspace } = get();
+      const cursors = cursorsOf(workspace);
+      if (cursors.length === 0) return;
+      const next = addCursorVerticalTo(cursors, visibleDocuments(workspace), dir);
+      if (next === cursors) return;
+      set(cursorsState(workspace, next));
+    },
+
+    /** Alt+click: add a cursor at `pos` in `docId`, or remove the one there. */
+    toggleCursorAt: (docId, pos) => {
+      const { workspace } = get();
+      const doc = workspace.documents.find(d => d.id === docId);
+      if (!doc) return;
+      // Coming from a column cursor, there is no one cursor to start from.
+      const start = workspace.columnCursor !== null || workspace.columnSelection ? [] : cursorsOf(workspace);
+      const next = toggleCursor(start, docId, Math.min(pos, doc.raw.length));
+      set(cursorsState(workspace, next));
+    },
+
+    /** Move every cursor: a step along its row, or to the row's start or end. */
+    moveCursors: (by) => {
+      const { workspace } = get();
+      if (!workspace.multiCursors) return;
+      const docsById = new Map(workspace.documents.map(d => [d.id, d]));
+      set(cursorsState(workspace, moveCursorsBy(workspace.multiCursors, docsById, by)));
+    },
+
+    /**
+     * Alt+Shift+I: turn the cursor into a column cursor on every row, at its
+     * position (a selection, into the same columns selected in every row) — or,
+     * from a column cursor, back into one cursor, on the row it started from and
+     * at the column the column cursor has reached. With several cursors, the
+     * primary's position is the one taken.
+     */
+    toggleColumnCursor: () => {
+      const { workspace } = get();
+      const doc = workspace.documents.find(d => d.id === workspace.activeDocId);
+      if (!doc) return;
+
+      if (workspace.columnCursor !== null || workspace.columnSelection) {
+        const col = workspace.columnCursor ?? workspace.columnSelection.start;
+        set(cursorsState(workspace, [{ docId: doc.id, pos: Math.min(col, doc.raw.length) }]));
+        return;
+      }
+
+      // A selection in the row becomes the same columns selected in every row.
+      const selection = workspace.multiCursors ? null : doc.selection;
+      const [primary] = cursorsOf(workspace).slice(-1);
+      set({
+        workspace: {
+          ...workspace,
+          documents: selection
+            ? workspace.documents.map(d => (d === doc ? { ...d, selection: null } : d))
+            : workspace.documents,
+          columnCursor: selection ? null : primary.pos,
+          columnSelection: selection ? { start: selection.start, end: selection.end } : null,
+          multiCursors: null,
+          selectedDocIds: workspace.selectedDocIds.size > 0 ? new Set() : workspace.selectedDocIds,
+        },
+      });
+    },
+
+    /** Back to the one cursor, where the primary is. */
+    clearMultiCursors: () => {
+      const { workspace } = get();
+      if (workspace.multiCursors) set({ workspace: { ...workspace, multiCursors: null } });
+    },
+
+    /**
+     * Type or paste at every cursor. `text` is inserted at each, or, as a
+     * function, gives the text for each cursor — a paste of one line per cursor.
+     */
+    insertAtCursors: (text) => editAtCursors({
+      type: 'insert',
+      textFor: typeof text === 'function' ? text : () => text,
+    }),
+
+    /** Backspace (or, `forward`, Delete) at every cursor. */
+    deleteAtCursors: (forward = false) => editAtCursors({ type: forward ? 'delete' : 'backspace' }),
 
     setDragInsertIndex: (index) => {
       const { workspace } = get();
@@ -1025,6 +1216,7 @@ const useStore = create((set, get) => {
           selectedDocIds: new Set(),
           columnCursor: null,
           columnSelection: null,
+          multiCursors: null,
           viewSettings: selectedDocIds.has(workspace.viewSettings.referenceDocId)
             ? { ...workspace.viewSettings, referenceDocId: null }
             : workspace.viewSettings,
@@ -1137,7 +1329,7 @@ const useStore = create((set, get) => {
         ? (workspace.documents.find(d => !hiddenDocIds.has(d.id))?.id ?? null)
         : workspace.activeDocId;
 
-      set({ workspace: { ...workspace, hiddenDocIds, activeDocId } });
+      set({ workspace: { ...workspace, hiddenDocIds, activeDocId, multiCursors: null } });
     },
 
     showAllDocs: () => {
@@ -1185,6 +1377,8 @@ const useStore = create((set, get) => {
           groups: workspace.groups.map(g => (
             g.id === groupId ? { ...g, collapsed: !g.collapsed } : g
           )),
+          // A collapsed group's rows can't be seen to be edited.
+          multiCursors: null,
         },
       });
     },
@@ -1218,19 +1412,28 @@ const useStore = create((set, get) => {
       const { workspace } = get();
       // columnCursor and columnSelection are mutually exclusive: the cursor is a
       // single-column edit locus, the selection is a readable column range.
-      set({ workspace: { ...workspace, columnCursor: col, columnSelection: null } });
+      set({
+        workspace: {
+          ...workspace,
+          columnCursor: col,
+          columnSelection: null,
+          multiCursors: col === null ? workspace.multiCursors : null,
+        },
+      });
     },
 
     setColumnSelection: (sel) => {
       const { workspace } = get();
       // sel is { start, end } with start <= end, or null to clear.
-      set({ workspace: { ...workspace, columnSelection: sel, columnCursor: null } });
+      set({
+        workspace: {
+          ...workspace,
+          columnSelection: sel,
+          columnCursor: null,
+          multiCursors: sel === null ? workspace.multiCursors : null,
+        },
+      });
     },
-
-    /** Substitute `char` at `col` in every document whose length covers it. */
-    substituteColumn: (col, char) => applyToAllDocs(doc =>
-      col < doc.raw.length ? modelSubstitute(doc, col, char) : doc
-    ),
 
     /** Insert `char` as a new column at `col` in every document. */
     insertColumn: (col, char) => applyToAllDocs(doc =>
@@ -1247,14 +1450,6 @@ const useStore = create((set, get) => {
       const s = Math.max(0, Math.min(start, doc.raw.length));
       const e = Math.max(0, Math.min(end, doc.raw.length));
       return s < e ? modelDeleteRange(doc, s, e) : doc;
-    }),
-
-    /** Substitute characters in column range [start, end) with `char` in every document. */
-    substituteColumnRange: (start, end, char = GAP_CHAR) => applyToAllDocs(doc => {
-      const s = Math.max(0, Math.min(start, doc.raw.length));
-      const e = Math.max(0, Math.min(end, doc.raw.length));
-      if (s >= e) return doc;
-      return modelReplaceRange(doc, s, e, char.repeat(e - s));
     }),
 
     /** Replace column range [start, end) with `text` in every document whose length covers it. */

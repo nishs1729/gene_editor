@@ -43,8 +43,9 @@ Reading and hand-curating sequence data: checking a Sanger read against a refere
 **Editing**
 
 - **Locked by default** — click **Allow Editing** first, so a stray keystroke can't change data you only meant to read.
-- **Insert or substitute** — typing pushes the row right; Alt+base substitutes in place and keeps the columns in register.
+- **Insert or replace** — typing pushes the row right; select bases first and typing replaces them instead.
 - **Column editing** — click the ruler for a column cursor and type into every sequence at once; drag along the ruler to select a column range and replace, delete or copy the whole block.
+- **Multiple cursors** — as in VS Code: <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> adds a cursor on the sequence above or below, <kbd>Alt</kbd>+click adds one anywhere, and every keystroke is made at all of them as one undo step. Pasting one line per cursor gives each its own.
 - **Drag a selected span** left or right to slide bases through the gaps, as one undoable step.
 - **Transforms** — reverse, complement, reverse-complement, transcribe and reverse-transcribe, applied to the active sequence, every selected sequence, or just the selected span.
 - **Find and replace** — exact, IUPAC-aware (degenerate codes match the bases they stand for) or regex, with up to three mismatches, optional reverse-strand matching, across one sequence or all of them.
@@ -94,11 +95,11 @@ Sequences open locked. After **Allow Editing**:
 | You want to | Do this |
 |---|---|
 | Insert bases | Type — the rest of the row shifts right |
-| Substitute without shifting | Hold <kbd>Alt</kbd> and type the base |
+| Replace a base | Select it and type the new one |
 | Insert a gap | <kbd>Space</kbd> or <kbd>-</kbd> |
-| Delete but keep columns aligned | <kbd>Alt</kbd>+<kbd>Backspace</kbd> — leaves a gap |
-| Edit every sequence at one position | Click the ruler for a column cursor, then type |
+| Edit every sequence at one position | Click the ruler (or <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> at the cursor) for a column cursor, then type |
 | Edit a block across all sequences | Drag along the ruler, then type, delete or copy |
+| Edit some sequences at once | <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>Alt</kbd>+click for a cursor on each, then type |
 | Slide bases through gaps | Select a span and drag it left or right |
 | Rewrite a motif everywhere | <kbd>Ctrl</kbd>+<kbd>F</kbd>, then **Replace all** |
 
@@ -144,7 +145,10 @@ The distance matrix and the tree export separately, as CSV and SVG, from their o
 | Click a name | Select that sequence |
 | <kbd>Ctrl</kbd>+click / <kbd>Shift</kbd>+click a name | Add one / take the range in between |
 | Drag on the ruler | Select a column range across every sequence |
-| <kbd>Esc</kbd> | Clear the column cursor or column selection |
+| <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> | Add a cursor on the sequence above / below; the other arrow takes it back |
+| <kbd>Alt</kbd>+click | Add a cursor on any base, or remove one |
+| <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> | Turn the cursor into a column cursor on every sequence (a selection into a column selection), and back |
+| <kbd>Esc</kbd> | Back to one cursor; clear the column cursor or column selection |
 
 **Editing**
 
@@ -152,9 +156,7 @@ The distance matrix and the tree export separately, as CSV and SVG, from their o
 |---|---|
 | <kbd>A</kbd> <kbd>C</kbd> <kbd>G</kbd> <kbd>T</kbd> … | Type a base; IUPAC codes and <kbd>U</kbd> are accepted |
 | <kbd>Space</kbd> or <kbd>-</kbd> | Insert an alignment gap |
-| <kbd>Alt</kbd>+base | Substitute in place, keeping the columns aligned |
 | <kbd>Backspace</kbd> / <kbd>Delete</kbd> | Delete backwards / forwards |
-| <kbd>Alt</kbd>+<kbd>Backspace</kbd> | Replace with a gap instead of closing the column up |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>X</kbd>/<kbd>V</kbd> | Copy, cut, paste |
 | <kbd>F2</kbd> or double-click a name | Rename the sequence |
 | <kbd>Delete</kbd> (with names selected) | Delete those sequences — undo brings them back |

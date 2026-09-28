@@ -143,6 +143,18 @@ describe('undo history limits', () => {
     expect(saved.documents[0].history).toHaveLength(2);
   });
 
+  it('counts an edit at several cursors in one row as that many of the row\'s entries', () => {
+    const { doc: edited } = editRepeatedly(createDocument('a', 'ACGTACGT'), 3);
+    // The oldest edit was on its own; the latest two were made together.
+    const commands = [
+      { type: 'docEdit', docId: edited.id },
+      { type: 'multilineEdit', docIds: [edited.id, edited.id], previousCursors: [], nextCursors: [] },
+    ];
+    const saved = serializeProject([fileWith([edited], { workspaceHistory: commands })], 0).files[0];
+    expect(saved.workspaceHistory).toHaveLength(2);
+    expect(saved.documents[0].history).toHaveLength(3);
+  });
+
   it('keeps nothing of a deleted sequence\'s own stacks, which cannot be paired safely', () => {
     const { doc: gone } = editRepeatedly(createDocument('gone', 'ACGT'), 2);
     const deletion = {

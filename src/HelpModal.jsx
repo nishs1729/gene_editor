@@ -28,7 +28,10 @@ const SHORTCUTS = [
       [['Ctrl', 'click'], null, 'Add or remove a sequence from the row selection'],
       [['Shift', 'click'], null, 'Select a range of sequences in the gutter'],
       [['drag on ruler'], null, 'Select a column range across every sequence'],
-      [['Esc'], null, 'Clear the column cursor or column selection'],
+      [['Alt', '↑/↓'], null, 'Add a cursor on the sequence above / below (the other arrow takes it back)'],
+      [['Alt', 'click'], null, 'Add a cursor on any base, or remove one'],
+      [['Alt', 'Shift', 'I'], null, 'Cursor ↔ column cursor on every sequence (a selection becomes a column selection)'],
+      [['Esc'], null, 'Back to one cursor; clear the column cursor or column selection'],
     ],
   },
   {
@@ -36,9 +39,7 @@ const SHORTCUTS = [
     keys: [
       [['A'], ['C G T'], 'Type a base; IUPAC codes R Y S W K M B D H V N and U are accepted'],
       [['Space'], ['-'], 'Insert an alignment gap'],
-      [['Alt', 'base'], null, 'Substitute in place, keeping the columns aligned'],
       [['Backspace'], ['Delete'], 'Delete backwards / forwards'],
-      [['Alt', 'Backspace'], null, 'Replace with a gap instead of closing the column up'],
       [['Ctrl', 'C/X/V'], null, 'Copy, cut, paste'],
       [['F2'], null, 'Rename the focused or selected sequence'],
       [['Delete'], null, 'With sequences selected by name, delete those sequences'],
@@ -174,9 +175,9 @@ export default function HelpModal() {
               </p>
               <h3>Typing bases</h3>
               <p>
-                Typing <strong>inserts</strong> and pushes the rest of the row right; hold
-                <kbd>Alt</kbd> to <strong>substitute in place</strong> and keep the alignment columns in
-                register. <kbd>Space</kbd> and <kbd>-</kbd> both insert a gap. Degenerate IUPAC codes
+                Typing <strong>inserts</strong> and pushes the rest of the row right; select a base
+                first and typing <strong>replaces</strong> it instead. <kbd>Space</kbd> and <kbd>-</kbd>
+                both insert a gap. Degenerate IUPAC codes
                 (R Y S W K M B D H V N) and <kbd>U</kbd> are accepted everywhere a base is.
               </p>
               <h3>Moving blocks</h3>
@@ -190,7 +191,19 @@ export default function HelpModal() {
                 edits every sequence at once, so the columns stay aligned. Drag along the ruler to
                 select a <strong>column range</strong>: typing replaces it in every row,
                 <kbd>Backspace</kbd> removes it from every row, and <kbd>Ctrl</kbd>+<kbd>C</kbd> copies
-                the block.
+                the block. <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> does the same from the keyboard:
+                it turns the cursor into a column cursor where it stands (or a selection into a column
+                selection), and pressing it again comes back to one cursor.
+              </p>
+              <h3>Multiple cursors</h3>
+              <p>
+                To edit only some sequences, give them each a cursor: <kbd>Alt</kbd>+<kbd>↑</kbd> or
+                {' '}<kbd>Alt</kbd>+<kbd>↓</kbd> adds one on the sequence above or below, in the same column,
+                and <kbd>Alt</kbd>+click adds one on any base. Typing, <kbd>Space</kbd>,
+                {' '}<kbd>Backspace</kbd>, <kbd>Delete</kbd> and paste then happen at every cursor, as one
+                undoable step, and <kbd>←</kbd>/<kbd>→</kbd> move them all. Pasting as many lines as
+                there are cursors gives each cursor its own line, top to bottom. <kbd>Esc</kbd> or a
+                click goes back to one cursor.
               </p>
               <h3>Cleaning up an alignment</h3>
               <p>
@@ -238,8 +251,8 @@ export default function HelpModal() {
               </p>
               <h3>Comparing sequences</h3>
               <p>
-                <strong>Distances</strong> opens the pairwise identity matrix; <strong>Tree</strong>
-                builds a dendrogram from those same distances by UPGMA or Neighbour-Joining, and both
+                <strong>Distances</strong> opens the pairwise identity matrix; <strong>Tree</strong> builds
+                a dendrogram from those same distances by UPGMA or Neighbour-Joining, and both
                 export for use elsewhere.
               </p>
             </>

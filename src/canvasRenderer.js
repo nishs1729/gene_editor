@@ -617,9 +617,19 @@ export class CanvasRenderer {
       compareAt = i => ref.raw[i];
     }
 
+    // Multiple cursors, by the row they are on.
+    let cursorsByDoc = null;
+    if (state.multiCursors) {
+      cursorsByDoc = new Map();
+      for (const c of state.multiCursors) {
+        if (!cursorsByDoc.has(c.docId)) cursorsByDoc.set(c.docId, []);
+        cursorsByDoc.get(c.docId).push(c.pos);
+      }
+    }
+
     const rowContext = {
       state, gutter, xAt, firstCol, visibleCols, rowHeight,
-      compareAt, referenceId, matchesByDoc, activeDocId, columnCursor,
+      compareAt, referenceId, matchesByDoc, activeDocId, columnCursor, cursorsByDoc,
     };
 
     // Sequence area, clipped so scrolled bases never paint over the gutter or ruler.
@@ -696,7 +706,7 @@ export class CanvasRenderer {
     const ctx = this.ctx;
     const {
       state, gutter, xAt, firstCol, visibleCols, rowHeight,
-      compareAt, referenceId, matchesByDoc, activeDocId, columnCursor,
+      compareAt, referenceId, matchesByDoc, activeDocId, columnCursor, cursorsByDoc,
     } = context;
     const selectedDocIds = state.selectedDocIds ?? new Set();
     const showComplement = state.viewSettings.showComplement;
@@ -753,7 +763,7 @@ export class CanvasRenderer {
           contentHeight
         );
       }
-      if (columnCursor === null && this.cursorVisible && doc.cursorPos !== null) {
+      if (columnCursor === null && !cursorsByDoc && this.cursorVisible && doc.cursorPos !== null) {
         ctx.fillStyle = this.theme.cursor;
         ctx.fillRect(xAt(doc.cursorPos) - 1, rowY, CURSOR_WIDTH, contentHeight);
       }
@@ -761,6 +771,13 @@ export class CanvasRenderer {
         ctx.fillStyle = this.theme.dropMarker;
         ctx.fillRect(xAt(state.dragInsertIndex) - 1, rowY, CURSOR_WIDTH, contentHeight);
       }
+    }
+
+    // Every cursor blinks together, the primary's among them.
+    const carets = cursorsByDoc?.get(doc.id);
+    if (carets && this.cursorVisible) {
+      ctx.fillStyle = this.theme.cursor;
+      for (const pos of carets) ctx.fillRect(xAt(pos) - 1, rowY, CURSOR_WIDTH, contentHeight);
     }
   }
 

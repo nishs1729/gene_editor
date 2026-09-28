@@ -4,31 +4,28 @@
 // and type or paste new bases — existing residues shift rightward... To overwrite,
 // select the target region and type replacement sequence."
 //
-// Geneious's documented Shift-modifier for edit direction only has a well-defined
-// meaning inside a fixed-width alignment, where the insert consumes a gap on the
-// far side. Backspace and Delete already cover both directions for deletion, so
-// the alignment-preserving operations are bound to Alt instead: Alt+char
-// substitutes in place and Alt+Backspace/Delete leaves a gap, both of which keep
-// column alignment intact. Shift stays free for selection extension.
+// Alt is for adding cursors (Alt+↑/↓, in selection.js); it types and deletes
+// nothing, leaving other Alt keys to the browser and the system.
 
 import { isValidChar, GAP_CHAR } from './iupac.js';
+import { cursorsInRowOrder } from './multiCursor.js';
+import { visibleDocuments } from './rowLayout.js';
 
 /**
- * Resolve the character a keypress means.
+ * Resolve the character a keypress means, or null if it types nothing.
  * Space is a shortcut for the gap character — it's the fastest key to reach when
  * hand-adjusting an alignment. This is a keyboard mapping only: space is still
  * not a valid sequence character, so parsing and paste keep stripping it.
- * On macOS, Alt+letter emits an accented glyph rather than the letter, so the
- * physical key code is the reliable source when Alt is held.
  */
 function charFromEvent(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
   if (e.code === 'Space') return GAP_CHAR;
-  if (e.altKey) {
-    if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
-    if (e.code === 'Minus') return GAP_CHAR;
-    return null;
-  }
   return e.key.length === 1 ? e.key.toUpperCase() : null;
+}
+
+/** Backspace or Delete, not held with Alt. */
+function isDeletion(e) {
+  return (e.key === 'Backspace' || e.key === 'Delete') && !e.altKey;
 }
 
 /**
@@ -99,6 +96,46 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       return;
     }
 
+    // Multiple cursors: each keystroke is made at every one of them, as one undo
+    // step. They are carets, not selections, so there is nothing to copy or cut.
+    if (state.multiCursors) {
+      if (mod && (e.key === 'v' || e.key === 'V') && !e.shiftKey) {
+        e.preventDefault();
+        if (!canEdit()) return;
+        const cursors = state.multiCursors;
+        navigator.clipboard.readText().then(text => {
+          const valid = s => [...s.toUpperCase()].filter(c => isValidChar(c)).join('');
+          // One line per cursor — a block copied from as many rows — goes one
+          // to each, top to bottom; anything else is pasted whole at every one.
+          const lines = text.replace(/\r?\n$/, '').split(/\r?\n/).map(valid);
+          if (lines.length === cursors.length && lines.length > 1) {
+            const order = cursorsInRowOrder(cursors, visibleDocuments(state));
+            const lineFor = new Map(order.map((c, i) => [`${c.docId}:${c.pos}`, lines[i]]));
+            store.insertAtCursors(c => lineFor.get(`${c.docId}:${c.pos}`) ?? '');
+            return;
+          }
+          const all = valid(text);
+          if (all) store.insertAtCursors(all);
+          else store.showToast('Clipboard contained no valid IUPAC characters', 'warning');
+        }).catch(() => {
+          store.showToast('Could not read clipboard', 'error');
+        });
+        return;
+      }
+
+      if (isDeletion(e)) {
+        e.preventDefault();
+        if (canEdit()) store.deleteAtCursors(e.key === 'Delete');
+        return;
+      }
+
+      const char = charFromEvent(e);
+      if (!char || !isValidChar(char)) return;
+      e.preventDefault();
+      if (canEdit()) store.insertAtCursors(char);
+      return;
+    }
+
     // Column-selection mode: a range of columns selected by ruler drag across all rows.
     if (state.columnSelection) {
       const { start, end } = state.columnSelection;
@@ -125,22 +162,15 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
       }
 
       // Backspace / Delete
-      if (e.key === 'Backspace' || e.key === 'Delete') {
+      if (isDeletion(e)) {
         e.preventDefault();
         if (!canEdit()) return;
-        if (e.altKey) {
-          store.substituteColumnRange(colStart, colEnd, GAP_CHAR);
-          store.setColumnCursor(colStart);
-        } else {
-          store.deleteColumnRange(colStart, colEnd);
-          const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
-          store.setColumnCursor(Math.max(0, Math.min(colStart, maxLen - 1)));
-        }
+        store.deleteColumnRange(colStart, colEnd);
+        const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
+        store.setColumnCursor(Math.max(0, Math.min(colStart, maxLen - 1)));
         return;
       }
 
-      if (e.key.length !== 1 && !e.altKey) return;
-      if (e.ctrlKey || e.metaKey) return;
       const char = charFromEvent(e);
       if (!char) return;
       e.preventDefault();
@@ -158,31 +188,22 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
     // Column-cursor mode: every keystroke applies to this column in every row at
     // once. Insert and delete are safe here precisely because they hit all rows
     // identically — the columns stay in register. The bindings mirror row mode:
-    // type inserts, Alt+type substitutes in place, Backspace/Delete remove,
-    // Alt+Backspace/Delete leave a gap. Left/Right/Escape go to handleSelectionKeys.
+    // type inserts, Backspace/Delete remove. Left/Right/Escape go to handleSelectionKeys.
     if (state.columnCursor !== null) {
       const col = state.columnCursor;
       const maxLen = state.documents.reduce((m, d) => Math.max(m, d.raw.length), 0);
 
-      if (e.key === 'Backspace' || e.key === 'Delete') {
+      if (isDeletion(e)) {
         e.preventDefault();
         if (!canEdit()) return;
         const target = e.key === 'Backspace' ? col - 1 : col;
         if (target < 0 || target >= maxLen) return;
-
-        if (e.altKey) {
-          store.substituteColumn(target, GAP_CHAR);
-          if (e.key === 'Backspace') store.setColumnCursor(target);
-        } else {
-          store.deleteColumn(target);
-          // One column is gone, so the cursor has to stay inside the new extent.
-          store.setColumnCursor(Math.max(0, Math.min(target, maxLen - 2)));
-        }
+        store.deleteColumn(target);
+        // One column is gone, so the cursor has to stay inside the new extent.
+        store.setColumnCursor(Math.max(0, Math.min(target, maxLen - 2)));
         return;
       }
 
-      if (e.key.length !== 1 && !e.altKey) return;
-      if (e.ctrlKey || e.metaKey) return;
       const char = charFromEvent(e);
       if (!char) return;
       e.preventDefault();
@@ -192,14 +213,9 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
         return;
       }
 
-      if (e.altKey) {
-        store.substituteColumn(col, char);
-        store.setColumnCursor(Math.min(maxLen - 1, col + 1));
-      } else {
-        // Every row grows by one, so col + 1 is always in range afterwards.
-        store.insertColumn(col, char);
-        store.setColumnCursor(col + 1);
-      }
+      // Every row grows by one, so col + 1 is always in range afterwards.
+      store.insertColumn(col, char);
+      store.setColumnCursor(col + 1);
       return;
     }
 
@@ -263,25 +279,10 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
     }
 
     // --- Backspace / Delete ---
-    if (e.key === 'Backspace' || e.key === 'Delete') {
+    if (isDeletion(e)) {
       e.preventDefault();
       if (!canEdit()) return;
       const forward = e.key === 'Delete';
-
-      if (e.altKey) {
-        // Column-preserving: leave gaps behind instead of closing them up.
-        if (selection) {
-          store.replaceRange(selection.start, selection.end, GAP_CHAR.repeat(selection.end - selection.start));
-          store.setCursorPos(selection.end);
-        } else if (forward && pos < doc.raw.length) {
-          store.replaceRange(pos, pos + 1, GAP_CHAR);
-          store.setCursorPos(pos + 1);
-        } else if (!forward && pos > 0) {
-          store.replaceRange(pos - 1, pos, GAP_CHAR);
-          store.setCursorPos(pos - 1);
-        }
-        return;
-      }
 
       if (selection) {
         store.deleteRange(selection.start, selection.end);
@@ -296,24 +297,11 @@ export function createEditingKeyHandler(getContext, store, handleSelectionKeys) 
     }
 
     // --- Typing a base ---
-    if (mod) return;
     const char = charFromEvent(e);
     if (!char || !isValidChar(char)) return;
 
     e.preventDefault();
     if (!canEdit()) return;
-
-    if (e.altKey) {
-      // Substitute in place — length and alignment columns unchanged.
-      if (selection) {
-        store.replaceRange(selection.start, selection.end, char.repeat(selection.end - selection.start));
-        store.setCursorPos(selection.end);
-      } else if (pos < doc.raw.length) {
-        store.substitute(pos, char);
-        store.setCursorPos(pos + 1);
-      }
-      return;
-    }
 
     if (selection) {
       store.replaceRange(selection.start, selection.end, char);

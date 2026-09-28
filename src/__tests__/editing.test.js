@@ -4,7 +4,7 @@ import { createDocument } from '../sequenceModel.js';
 
 /**
  * A keydown event as the handler sees it. `code` defaults to the physical key a
- * letter would come from, which is what the Alt bindings read.
+ * letter would come from.
  */
 function key(k, opts = {}) {
   return {
@@ -25,7 +25,6 @@ function makeStore() {
     save: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
-    substitute: vi.fn(),
     insertAt: vi.fn(),
     deleteRange: vi.fn(),
     replaceRange: vi.fn(),
@@ -33,12 +32,12 @@ function makeStore() {
     setColumnCursor: vi.fn(),
     startRename: vi.fn(),
     deleteSelectedDocs: vi.fn(),
-    substituteColumn: vi.fn(),
     insertColumn: vi.fn(),
     deleteColumn: vi.fn(),
     deleteColumnRange: vi.fn(),
-    substituteColumnRange: vi.fn(),
     replaceColumnRange: vi.fn(),
+    insertAtCursors: vi.fn(),
+    deleteAtCursors: vi.fn(),
     showToast: vi.fn(),
   };
 }
@@ -48,11 +47,11 @@ let context;
 let onKeyDown;
 
 /** Build a handler over one editable row, plus optional column-cursor or column-selection state. */
-function setup({ raw = 'ACGTACGT', cursorPos = 3, selection = null, editingEnabled = true, columnCursor = null, columnSelection = null, documents = null } = {}) {
+function setup({ raw = 'ACGTACGT', cursorPos = 3, selection = null, editingEnabled = true, columnCursor = null, columnSelection = null, multiCursors = null, documents = null } = {}) {
   const doc = { ...createDocument('row', raw), cursorPos, selection };
   const allDocs = documents ?? [doc, { ...createDocument('other', raw) }];
   context = {
-    state: { documents: allDocs, columnCursor, columnSelection },
+    state: { documents: allDocs, columnCursor, columnSelection, multiCursors },
     doc,
     editingEnabled,
   };
@@ -68,20 +67,6 @@ describe('row editing — typing', () => {
     onKeyDown(key('g'));
     expect(store.insertAt).toHaveBeenCalledWith(3, 'G');
     expect(store.setCursorPos).toHaveBeenCalledWith(4);
-    expect(store.substitute).not.toHaveBeenCalled();
-  });
-
-  it('substitutes in place with Alt, leaving the length unchanged', () => {
-    onKeyDown(key('g', { altKey: true }));
-    expect(store.substitute).toHaveBeenCalledWith(3, 'G');
-    expect(store.insertAt).not.toHaveBeenCalled();
-  });
-
-  it('reads the physical key under Alt, since macOS emits accented glyphs there', () => {
-    onKeyDown(key('ø', { altKey: true, code: 'KeyO' }));
-    expect(store.substitute).not.toHaveBeenCalled(); // O is not a valid base
-    onKeyDown(key('©', { altKey: true, code: 'KeyG' }));
-    expect(store.substitute).toHaveBeenCalledWith(3, 'G');
   });
 
   it('replaces a selection in one undoable step', () => {
@@ -90,12 +75,6 @@ describe('row editing — typing', () => {
     expect(store.replaceRange).toHaveBeenCalledWith(2, 6, 'A');
     expect(store.deleteRange).not.toHaveBeenCalled();
     expect(store.setCursorPos).toHaveBeenCalledWith(3);
-  });
-
-  it('fills a selection with Alt+base without changing its length', () => {
-    setup({ selection: { start: 2, end: 6 } });
-    onKeyDown(key('a', { altKey: true }));
-    expect(store.replaceRange).toHaveBeenCalledWith(2, 6, 'AAAA');
   });
 
   it('ignores characters that are not IUPAC codes', () => {
@@ -115,11 +94,6 @@ describe('space inserts a gap', () => {
     onKeyDown(space());
     expect(store.insertAt).toHaveBeenCalledWith(3, '-');
     expect(store.setCursorPos).toHaveBeenCalledWith(4);
-  });
-
-  it('substitutes a gap in place with Alt', () => {
-    onKeyDown(space({ altKey: true }));
-    expect(store.substitute).toHaveBeenCalledWith(3, '-');
   });
 
   it('replaces a selection with a single gap', () => {
@@ -159,29 +133,11 @@ describe('row editing — deletion', () => {
     expect(store.deleteRange).toHaveBeenCalledWith(3, 4);
   });
 
-  it('Alt+delete leaves a gap instead of closing the column up', () => {
-    onKeyDown(key('Delete', { altKey: true }));
-    expect(store.replaceRange).toHaveBeenCalledWith(3, 4, '-');
-    expect(store.deleteRange).not.toHaveBeenCalled();
-  });
-
-  it('Alt+backspace gaps the preceding base', () => {
-    onKeyDown(key('Backspace', { altKey: true }));
-    expect(store.replaceRange).toHaveBeenCalledWith(2, 3, '-');
-    expect(store.setCursorPos).toHaveBeenCalledWith(2);
-  });
-
   it('deletes a whole selection', () => {
     setup({ selection: { start: 1, end: 4 } });
     onKeyDown(key('Backspace'));
     expect(store.deleteRange).toHaveBeenCalledWith(1, 4);
     expect(store.setCursorPos).toHaveBeenCalledWith(1);
-  });
-
-  it('gaps a whole selection with Alt, keeping its length', () => {
-    setup({ selection: { start: 1, end: 4 } });
-    onKeyDown(key('Backspace', { altKey: true }));
-    expect(store.replaceRange).toHaveBeenCalledWith(1, 4, '---');
   });
 
   it('does nothing at the start of the sequence', () => {
@@ -256,20 +212,9 @@ describe('column-cursor editing', () => {
     expect(store.insertAt).not.toHaveBeenCalled(); // never falls through to row editing
   });
 
-  it('Alt+base substitutes the column in place', () => {
-    onKeyDown(key('g', { altKey: true }));
-    expect(store.substituteColumn).toHaveBeenCalledWith(3, 'G');
-    expect(store.insertColumn).not.toHaveBeenCalled();
-  });
-
   it('space inserts a gap column', () => {
     onKeyDown(space());
     expect(store.insertColumn).toHaveBeenCalledWith(3, '-');
-  });
-
-  it('Alt+space gaps the column in place', () => {
-    onKeyDown(space({ altKey: true }));
-    expect(store.substituteColumn).toHaveBeenCalledWith(3, '-');
   });
 
   it('backspace deletes the column before the cursor', () => {
@@ -286,12 +231,6 @@ describe('column-cursor editing', () => {
     cols({ columnCursor: 7 });
     onKeyDown(key('Delete'));
     expect(store.setColumnCursor).toHaveBeenCalledWith(6);
-  });
-
-  it('Alt+delete gaps the column instead of removing it', () => {
-    onKeyDown(key('Delete', { altKey: true }));
-    expect(store.substituteColumn).toHaveBeenCalledWith(3, '-');
-    expect(store.deleteColumn).not.toHaveBeenCalled();
   });
 
   it('does not delete past either end of the alignment', () => {
@@ -361,18 +300,6 @@ describe('column-selection editing', () => {
   it('delete removes the selected column range across all rows', () => {
     onKeyDown(key('Delete'));
     expect(store.deleteColumnRange).toHaveBeenCalledWith(2, 5);
-    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
-  });
-
-  it('Alt+Backspace gaps the column range in place', () => {
-    onKeyDown(key('Backspace', { altKey: true }));
-    expect(store.substituteColumnRange).toHaveBeenCalledWith(2, 5, '-');
-    expect(store.setColumnCursor).toHaveBeenCalledWith(2);
-  });
-
-  it('Alt+Delete gaps the column range in place', () => {
-    onKeyDown(key('Delete', { altKey: true }));
-    expect(store.substituteColumnRange).toHaveBeenCalledWith(2, 5, '-');
     expect(store.setColumnCursor).toHaveBeenCalledWith(2);
   });
 
@@ -495,9 +422,117 @@ describe('deleting selected sequences', () => {
     expect(store.deleteSelectedDocs).not.toHaveBeenCalled();
   });
 
-  it('leaves Alt+Delete (delete in place) alone', () => {
+  it('leaves Alt+Delete alone', () => {
     withSelectedRows();
     onKeyDown(key('Delete', { altKey: true }));
     expect(store.deleteSelectedDocs).not.toHaveBeenCalled();
+  });
+});
+
+describe('Alt is left to the browser', () => {
+  const edits = () => [
+    store.insertAt, store.deleteRange, store.replaceRange,
+    store.insertColumn, store.deleteColumn, store.deleteColumnRange, store.replaceColumnRange,
+  ].filter(fn => fn.mock.calls.length > 0);
+
+  for (const [label, opts] of [
+    ['in a row', {}],
+    ['with a column cursor', { columnCursor: 3 }],
+    ['with a column selection', { columnSelection: { start: 2, end: 5 } }],
+  ]) {
+    it(`types nothing on Alt+base, ${label}`, () => {
+      setup(opts);
+      const e = key('g', { altKey: true });
+      onKeyDown(e);
+      expect(edits()).toEqual([]);
+      expect(e.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it(`deletes nothing on Alt+Backspace or Alt+Delete, ${label}`, () => {
+      setup(opts);
+      onKeyDown(key('Backspace', { altKey: true }));
+      onKeyDown(key('Delete', { altKey: true }));
+      expect(edits()).toEqual([]);
+    });
+  }
+
+  it('inserts nothing on Alt+Space', () => {
+    onKeyDown(space({ altKey: true }));
+    expect(store.insertAt).not.toHaveBeenCalled();
+  });
+});
+
+describe('multiple cursors', () => {
+  function withCursors(opts = {}) {
+    const doc = setup(opts);
+    const other = context.state.documents[1];
+    context.state.multiCursors = [{ docId: other.id, pos: 1 }, { docId: doc.id, pos: 3 }];
+    return { doc, other };
+  }
+
+  it('types at every cursor, not just the active row', () => {
+    withCursors();
+    onKeyDown(key('g'));
+    expect(store.insertAtCursors).toHaveBeenCalledWith('G');
+    expect(store.insertAt).not.toHaveBeenCalled();
+  });
+
+  it('inserts a gap for Space', () => {
+    withCursors();
+    onKeyDown(space());
+    expect(store.insertAtCursors).toHaveBeenCalledWith('-');
+  });
+
+  it('Backspace and Delete delete at every cursor', () => {
+    withCursors();
+    onKeyDown(key('Backspace'));
+    expect(store.deleteAtCursors).toHaveBeenLastCalledWith(false);
+    onKeyDown(key('Delete'));
+    expect(store.deleteAtCursors).toHaveBeenLastCalledWith(true);
+    expect(store.deleteRange).not.toHaveBeenCalled();
+  });
+
+  it('ignores keys that are not bases', () => {
+    withCursors();
+    const e = key('j');
+    onKeyDown(e);
+    expect(store.insertAtCursors).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('is held to the edit lock', () => {
+    withCursors({ editingEnabled: false });
+    onKeyDown(key('g'));
+    onKeyDown(key('Backspace'));
+    expect(store.insertAtCursors).not.toHaveBeenCalled();
+    expect(store.deleteAtCursors).not.toHaveBeenCalled();
+    expect(store.showToast).toHaveBeenCalled();
+  });
+
+  describe('paste', () => {
+    let clipboardText;
+    beforeEach(() => {
+      vi.stubGlobal('navigator', { clipboard: { readText: () => Promise.resolve(clipboardText) } });
+    });
+    const flush = () => new Promise(r => setTimeout(r, 0));
+
+    it('pastes the clipboard at every cursor', async () => {
+      withCursors();
+      clipboardText = 'acg t';
+      onKeyDown(key('v', { ctrlKey: true }));
+      await flush();
+      expect(store.insertAtCursors).toHaveBeenCalledWith('ACGT');
+    });
+
+    it('gives one line to each cursor, top to bottom, when the counts match', async () => {
+      const { doc, other } = withCursors();
+      clipboardText = 'AAA\nCC\n';
+      onKeyDown(key('v', { ctrlKey: true }));
+      await flush();
+      const textFor = store.insertAtCursors.mock.calls[0][0];
+      // `doc` is the top row, so it takes the first line.
+      expect(textFor({ docId: doc.id, pos: 3 })).toBe('AAA');
+      expect(textFor({ docId: other.id, pos: 1 })).toBe('CC');
+    });
   });
 });

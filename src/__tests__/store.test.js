@@ -525,7 +525,7 @@ describe('workspace undo/redo (deleteSelectedDocs)', () => {
 
   it('undo preserves the per-document edit history of restored docs', () => {
     get().toggleEditingEnabled();
-    get().substitute(0, 'T'); // edit alpha
+    get().replaceRange(0, 1, 'T'); // edit alpha
     get().toggleDocSelection(ids()[1]); // delete beta
     get().deleteSelectedDocs();
     get().undo(); // restore beta
@@ -578,11 +578,6 @@ describe('column cursor', () => {
 });
 
 describe('column edits', () => {
-  it('substitutes the same column in every document', () => {
-    get().substituteColumn(0, 'T');
-    expect(docs().map(d => d.raw)).toEqual(['TCGTACGT', 'TCGTACGT', 'TCGTTCGT']);
-  });
-
   it('inserts a column into every document, preserving alignment', () => {
     get().insertColumn(2, '-');
     expect(docs().map(d => d.raw)).toEqual(['AC-GTACGT', 'AC-GTACGT', 'AC-GTTCGT']);
@@ -600,18 +595,15 @@ describe('column edits', () => {
       { name: 'long', sequence: 'ACGTACGT' },
       { name: 'short', sequence: 'ACG' },
     ]);
-    get().substituteColumn(5, 'T');
-    expect(docs().map(d => d.raw)).toEqual(['ACGTATGT', 'ACG']);
-
     get().deleteColumn(5);
     expect(docs().map(d => d.raw)).toEqual(['ACGTAGT', 'ACG']);
   });
 
   it('records one undoable command per document', () => {
-    get().substituteColumn(0, 'T');
+    get().insertColumn(0, 'T');
     for (const doc of docs()) {
       expect(doc.history.length).toBe(1);
-      expect(doc.history[0].type).toBe('substitute');
+      expect(doc.history[0].type).toBe('insert');
     }
   });
 
@@ -623,11 +615,6 @@ describe('column edits', () => {
   it('deletes a column range across all documents', () => {
     get().deleteColumnRange(1, 4);
     expect(docs().map(d => d.raw)).toEqual(['AACGT', 'AACGT', 'ATCGT']);
-  });
-
-  it('substitutes a column range with gaps across all documents', () => {
-    get().substituteColumnRange(1, 4, '-');
-    expect(docs().map(d => d.raw)).toEqual(['A---ACGT', 'A---ACGT', 'A---TCGT']);
   });
 
   it('mutually excludes columnCursor and columnSelection', () => {
@@ -645,8 +632,8 @@ describe('column edits', () => {
   });
 
   it('undoes multiline column edits across all affected documents', () => {
-    get().substituteColumn(0, 'T');
-    expect(docs().map(d => d.raw)).toEqual(['TCGTACGT', 'TCGTACGT', 'TCGTTCGT']);
+    get().insertColumn(0, 'T');
+    expect(docs().map(d => d.raw)).toEqual(['TACGTACGT', 'TACGTACGT', 'TACGTTCGT']);
 
     // Undoing must undo ALL documents, not just the active one
     get().undo();
@@ -654,7 +641,7 @@ describe('column edits', () => {
 
     // Redoing re-applies the edit to all documents
     get().redo();
-    expect(docs().map(d => d.raw)).toEqual(['TCGTACGT', 'TCGTACGT', 'TCGTTCGT']);
+    expect(docs().map(d => d.raw)).toEqual(['TACGTACGT', 'TACGTACGT', 'TACGTTCGT']);
   });
 
   it('undoes multiline column deletion across all documents', () => {
@@ -681,11 +668,11 @@ describe('column edits', () => {
 
   it('interleaves single-document and multiline edits in undo/redo history', () => {
     // 1. Single-doc edit on doc 0
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     expect(docs().map(d => d.raw)).toEqual(['TCGTACGT', 'ACGTACGT', 'ACGTTCGT']);
 
     // 2. Multiline edit on column 7
-    get().substituteColumn(7, '-');
+    get().replaceColumnRange(7, 8, '-');
     expect(docs().map(d => d.raw)).toEqual(['TCGTACG-', 'ACGTACG-', 'ACGTTCG-']);
 
     // 3. Undo multiline edit first
@@ -708,14 +695,14 @@ describe('column edits', () => {
 
 describe('active-document editing', () => {
   it('only touches the active document', () => {
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     expect(docs().map(d => d.raw)).toEqual(['TCGTACGT', 'ACGTACGT', 'ACGTTCGT']);
   });
 
   it('gives each document its own undo history', () => {
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     get().setActiveDoc(ids()[1]);
-    get().substitute(1, 'T');
+    get().replaceRange(1, 2, 'T');
     get().undo();
     expect(docs().map(d => d.raw)).toEqual(['TCGTACGT', 'ACGTACGT', 'ACGTTCGT']);
   });
@@ -737,14 +724,14 @@ describe('save', () => {
   });
 
   it('clears the dirty flags it just wrote out', () => {
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     expect(docs().some(d => d.dirty)).toBe(true);
     get().save();
     expect(docs().some(d => d.dirty)).toBe(false);
   });
 
   it('clears the dirty flags of files that are not on screen, too', () => {
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     const firstId = ws().activeFileId;
     get().loadWorkspace(RECORDS, 'other.fasta');
     get().save();
@@ -754,7 +741,7 @@ describe('save', () => {
 
   it('keeps undo history, so a reopened session can still undo', () => {
     get().toggleEditingEnabled();
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     get().save();
     get().openProject(deserializeProject(stored()), 'replace');
     expect(docs()[0].raw).toBe('TCGTACGT');
@@ -763,7 +750,7 @@ describe('save', () => {
   });
 
   it('lets the history go when the session is too big for browser storage', () => {
-    get().substitute(0, 'T');
+    get().replaceRange(0, 1, 'T');
     const setItem = storage.setItem;
     let calls = 0;
     storage.setItem = (k, v) => {
@@ -1191,5 +1178,190 @@ describe('selectOnlyDoc', () => {
     const before = ws();
     get().selectOnlyDoc(a);
     expect(ws()).toBe(before);
+  });
+});
+
+describe('multiple cursors', () => {
+  const raws = () => docs().map(d => d.raw);
+  const cursors = () => ws().multiCursors?.map(({ docId, pos }) => ({ docId, pos })) ?? null;
+
+  it('Alt+↓ adds a cursor on the next row, which becomes the active one', () => {
+    const [a, b] = ids();
+    get().setCursorPos(3);
+    get().addCursorVertical('down');
+    expect(cursors()).toEqual([{ docId: a, pos: 3 }, { docId: b, pos: 3 }]);
+    expect(ws().activeDocId).toBe(b);
+    expect(getActiveDoc(get()).cursorPos).toBe(3);
+  });
+
+  it('Alt+↑ back again returns to the one cursor', () => {
+    const [a] = ids();
+    get().setCursorPos(3);
+    get().addCursorVertical('down');
+    get().addCursorVertical('up');
+    expect(ws().multiCursors).toBeNull();
+    expect(ws().activeDocId).toBe(a);
+    expect(getActiveDoc(get()).cursorPos).toBe(3);
+  });
+
+  it('Alt+click adds cursors anywhere, and removes one clicked again', () => {
+    const [a, , c] = ids();
+    get().setCursorPos(1);
+    get().toggleCursorAt(c, 6);
+    expect(cursors()).toEqual([{ docId: a, pos: 1 }, { docId: c, pos: 6 }]);
+    get().toggleCursorAt(a, 1);
+    expect(ws().multiCursors).toBeNull();
+    expect(ws().activeDocId).toBe(c);
+    expect(getActiveDoc(get()).cursorPos).toBe(6);
+  });
+
+  it('Alt+click from a column cursor starts a fresh set there', () => {
+    const [, b] = ids();
+    get().setColumnCursor(4);
+    get().toggleCursorAt(b, 2);
+    expect(ws().columnCursor).toBeNull();
+    expect(ws().multiCursors).toBeNull();
+    expect(ws().activeDocId).toBe(b);
+    expect(getActiveDoc(get()).cursorPos).toBe(2);
+  });
+
+  it('clears a row selection, so Delete means bases', () => {
+    const [a] = ids();
+    get().selectOnlyDoc(a);
+    get().addCursorVertical('down');
+    expect(ws().selectedDocIds.size).toBe(0);
+  });
+
+  it('types, deletes and moves at every cursor', () => {
+    const [a, , c] = ids();
+    get().setCursorPos(2);
+    get().toggleCursorAt(c, 4);
+    get().insertAtCursors('-');
+    expect(raws()).toEqual(['AC-GTACGT', 'ACGTACGT', 'ACGT-TCGT']);
+    expect(cursors()).toEqual([{ docId: a, pos: 3 }, { docId: c, pos: 5 }]);
+    get().deleteAtCursors();
+    expect(raws()).toEqual(RECORDS.map(r => r.sequence));
+    get().deleteAtCursors(true);
+    expect(raws()).toEqual(['ACTACGT', 'ACGTACGT', 'ACGTCGT']);
+    get().moveCursors('end');
+    expect(cursors()).toEqual([{ docId: a, pos: 7 }, { docId: c, pos: 7 }]);
+  });
+
+  it('undoes an edit at every cursor in one step, and puts the cursors back', () => {
+    const [a, b] = ids();
+    get().setCursorPos(2);
+    get().addCursorVertical('down');
+    get().toggleCursorAt(b, 6); // two cursors in one row
+    get().insertAtCursors('NN');
+    expect(raws()).toEqual(['ACNNGTACGT', 'ACNNGTACNNGT', 'ACGTTCGT']);
+
+    get().moveCursors(-1);
+    get().undo();
+    expect(raws()).toEqual(RECORDS.map(r => r.sequence));
+    expect(cursors()).toEqual([{ docId: a, pos: 2 }, { docId: b, pos: 2 }, { docId: b, pos: 6 }]);
+
+    get().redo();
+    expect(raws()).toEqual(['ACNNGTACGT', 'ACNNGTACNNGT', 'ACGTTCGT']);
+    expect(cursors()).toEqual([{ docId: a, pos: 4 }, { docId: b, pos: 4 }, { docId: b, pos: 10 }]);
+  });
+
+  it('is let go by anything that places the one cursor', () => {
+    get().addCursorVertical('down');
+    get().setCursorPos(0);
+    expect(ws().multiCursors).toBeNull();
+
+    get().addCursorVertical('down');
+    get().setColumnCursor(1);
+    expect(ws().multiCursors).toBeNull();
+
+    get().addCursorVertical('down');
+    get().setActiveDoc(ids()[2]);
+    expect(ws().multiCursors).toBeNull();
+  });
+
+  it('is let go by an edit made some other way, or by undoing one', () => {
+    get().addCursorVertical('down');
+    get().insertColumn(0, 'A');
+    expect(ws().multiCursors).toBeNull();
+
+    get().addCursorVertical('down');
+    get().undo();
+    expect(ws().multiCursors).toBeNull();
+  });
+
+  it('is let go when a row is hidden', () => {
+    get().addCursorVertical('down');
+    get().toggleDocHidden(ids()[2]);
+    expect(ws().multiCursors).toBeNull();
+  });
+
+  it('skips hidden rows when growing', () => {
+    const [a, , c] = ids();
+    get().toggleDocHidden(ids()[1]);
+    get().setActiveDoc(a);
+    get().setCursorPos(1);
+    get().addCursorVertical('down');
+    expect(cursors()).toEqual([{ docId: a, pos: 1 }, { docId: c, pos: 1 }]);
+  });
+
+  it('survives a save to a project and back, undo included', () => {
+    get().setCursorPos(2);
+    get().addCursorVertical('down');
+    get().insertAtCursors('T');
+    const project = deserializeProject(JSON.parse(JSON.stringify(projectOf(ws()))));
+    get().openProject(project, 'replace');
+    expect(raws()).toEqual(['ACTGTACGT', 'ACTGTACGT', 'ACGTTCGT']);
+    get().undo();
+    expect(raws()).toEqual(RECORDS.map(r => r.sequence));
+    expect(cursors()).toEqual([{ docId: ids()[0], pos: 2 }, { docId: ids()[1], pos: 2 }]);
+  });
+});
+
+describe('toggleColumnCursor', () => {
+  it('turns the cursor into a column cursor at its position, and back', () => {
+    const [, b] = ids();
+    get().setActiveDoc(b);
+    get().setCursorPos(5);
+    get().toggleColumnCursor();
+    expect(ws().columnCursor).toBe(5);
+
+    get().setColumnCursor(7); // moved along while in column mode
+    get().toggleColumnCursor();
+    expect(ws().columnCursor).toBeNull();
+    expect(ws().activeDocId).toBe(b);
+    expect(getActiveDoc(get()).cursorPos).toBe(7);
+  });
+
+  it('takes the column of the newest of several cursors', () => {
+    get().setCursorPos(2);
+    get().toggleCursorAt(ids()[2], 6);
+    get().toggleColumnCursor();
+    expect(ws().columnCursor).toBe(6);
+    expect(ws().multiCursors).toBeNull();
+  });
+
+  it('turns a selection into the same columns selected in every row', () => {
+    get().setSelection(2, 5);
+    get().toggleColumnCursor();
+    expect(ws().columnSelection).toEqual({ start: 2, end: 5 });
+    expect(getActiveDoc(get()).selection).toBeNull();
+    get().toggleColumnCursor();
+    expect(ws().columnSelection).toBeNull();
+    expect(getActiveDoc(get()).cursorPos).toBe(2);
+  });
+
+  it('can sit past the last column, to add one at the end', () => {
+    get().setCursorPos(8);
+    get().toggleColumnCursor();
+    get().insertColumn(ws().columnCursor, '-');
+    expect(docs().every(d => d.raw.endsWith('-') && d.raw.length === 9)).toBe(true);
+  });
+
+  it('lands inside a shorter row when coming back', () => {
+    get().loadWorkspace([{ name: 'long', sequence: 'ACGTACGT' }, { name: 'short', sequence: 'AC' }]);
+    get().setActiveDoc(ids()[1]);
+    get().setColumnCursor(6);
+    get().toggleColumnCursor();
+    expect(getActiveDoc(get()).cursorPos).toBe(2);
   });
 });

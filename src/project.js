@@ -52,9 +52,14 @@ function trimStack(commands, docsById, stack) {
     const command = commands[i];
     const ids = editedDocIds(command);
     let size = 0;
+    // A command can name a row more than once — an edit at several cursors in
+    // it — and each time accounts for the next entry down that row's stack.
+    const here = new Map();
     for (const id of ids) {
       const entries = docsById.get(id)?.[stack] ?? [];
-      const entry = entries[entries.length - 1 - (used.get(id) ?? 0)];
+      const depth = (used.get(id) ?? 0) + (here.get(id) ?? 0);
+      const entry = entries[entries.length - 1 - depth];
+      here.set(id, (here.get(id) ?? 0) + 1);
       size += (entry?.before?.length ?? 0) + (entry?.after?.length ?? 0);
     }
     if (command.type === 'deleteDocuments') {
@@ -180,8 +185,15 @@ function openCommand(command, remap) {
   switch (command.type) {
     case 'docEdit':
       return { ...command, docId: remap(command.docId) };
-    case 'multilineEdit':
-      return { ...command, docIds: command.docIds.map(remap) };
+    case 'multilineEdit': {
+      const cursors = list => list?.map(c => ({ ...c, docId: remap(c.docId) }));
+      return {
+        ...command,
+        docIds: command.docIds.map(remap),
+        previousCursors: cursors(command.previousCursors),
+        nextCursors: cursors(command.nextCursors),
+      };
+    }
     case 'features':
       return { ...command, docId: remap(command.docId) };
     case 'reorderDocuments':
